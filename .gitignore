@@ -1,0 +1,10 @@
+/target
+
+# Internal documentations
+docs/references/
+
+# AI Files
+.opencode/
+.specify/
+_bmad*/
+openspec/
