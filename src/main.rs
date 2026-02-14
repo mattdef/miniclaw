@@ -23,6 +23,12 @@ fn main() {
     // Parse CLI early to check verbose flag before full initialization
     match cli::Cli::try_parse() {
         Ok(cli) => {
+            // Check for help subcommand before initializing logging
+            if let Some(cli::Commands::Help { command }) = &cli.command {
+                cli::handle_help(command.clone());
+                std::process::exit(0);
+            }
+
             // Initialize logging based on verbose flag
             init_logging(cli.verbose);
 
@@ -37,29 +43,19 @@ fn main() {
             match e.kind() {
                 ErrorKind::DisplayVersion | ErrorKind::DisplayHelp => {
                     // Print version or help and exit successfully
+                    // Clap handles this automatically
                     e.print().ok();
                     std::process::exit(0);
                 }
-                _ => {
-                    // Check if this is an unrecognized subcommand error
-                    let error_message = e.to_string();
-                    if error_message.contains("unrecognized subcommand")
-                        || error_message.contains("error: unrecognized subcommand")
-                    {
-                        // Extract command name from error
-                        if let Some(start) = error_message.find('\'') {
-                            if let Some(end) = error_message[start + 1..].find('\'') {
-                                let cmd = &error_message[start + 1..start + 1 + end];
-                                eprintln!("error: unknown command: {}", cmd);
-                                eprintln!("\nValid commands are: version, help");
-                                std::process::exit(1);
-                            }
-                        }
-                    }
-
-                    // For other errors, use clap's default behavior
+                ErrorKind::UnknownArgument | ErrorKind::InvalidValue => {
+                    // Invalid flags or arguments - exit with code 2
                     e.print().ok();
                     std::process::exit(2);
+                }
+                _ => {
+                    // For other errors (unknown commands), use clap's output and exit with code 1
+                    e.print().ok();
+                    std::process::exit(1);
                 }
             }
         }
