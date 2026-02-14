@@ -3,6 +3,9 @@
 # Internal documentations
 docs/references/
 
+# Environment variables
+.env
+
 # AI Files
 .opencode/
 .specify/
