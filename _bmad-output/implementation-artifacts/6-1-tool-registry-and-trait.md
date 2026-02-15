@@ -1,6 +1,6 @@
 # Story 6.1: Tool Registry and Trait
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -346,16 +346,94 @@ registry.register(Box::new(ExecTool::new()))?;
 **Modified Files:**
 1. `src/agent/tools/mod.rs` - Refactored to use types module, added new methods
 2. `src/agent/tools/message.rs` - Updated imports to use ToolResult
+3. `src/agent/agent_loop.rs` - Updated to use execute_tool() method (code review fix)
 
 **Created Files:**
 1. `src/agent/tools/types.rs` - Core types: Tool trait, ToolError, ToolDefinition, ToolResult
-2. `tests/tool_integration_tests.rs` - 13 integration tests covering complete tool system
+2. `tests/tool_integration_tests.rs` - 15 integration tests covering complete tool system
 
 **Verification:**
-- All 49 tests pass (36 unit + 13 integration)
-- No regressions in existing tests (274 total tests pass)
+- All 288 tests pass (273 lib + 15 integration)
+- No regressions in existing tests
 - ToolRegistry integrates seamlessly with existing AgentLoop
 - Type system enforces proper error handling and async execution
+
+### Code Review Fixes (2026-02-16)
+
+**Review Type:** Adversarial Senior Developer Code Review
+**Issues Found:** 9 HIGH, 2 MEDIUM, 1 LOW
+**Issues Fixed:** 9 HIGH, 2 MEDIUM
+
+**HIGH Severity Fixes:**
+
+1. ✅ **AC#3 Enhancement** - Added name suggestions to duplicate registration errors [src/agent/tools/mod.rs:75-82]
+   - Error now includes: "Suggestion: Use a different name like 'tool_v2' or 'tool_alt'"
+   - Fully implements AC#3 requirement
+
+2. ✅ **JSON Schema Validation** - Added validation for tool parameters() [src/agent/tools/types.rs:12-75]
+   - New `validate_json_schema()` function validates schema structure
+   - New `validate_args_against_schema()` validates args against schema
+   - Prevents invalid JSON schemas from being used
+   - Automatically validates args before tool execution
+
+3. ✅ **Argument Validation** - execute_tool() now validates args against schema [src/agent/tools/mod.rs:243-252]
+   - Reduces code duplication in individual tools
+   - Consistent validation across all tools
+   - Better error messages for missing/invalid parameters
+
+4. ✅ **Timeout Support** - Added 30-second default timeout [src/agent/tools/mod.rs:218-267]
+   - New `execute_tool_with_timeout()` method for custom timeouts
+   - Uses tokio::time::timeout to prevent blocking
+   - ToolError::Timeout now actually used in production code
+
+5. ✅ **Thread Safety** - ToolRegistry now uses Arc<RwLock<>> internally [src/agent/tools/mod.rs:30-35]
+   - Multiple readers, single writer pattern
+   - Registry is now Clone and can be shared across threads
+   - No external Mutex needed in user code
+   - All methods changed from &mut self to &self
+
+6. ✅ **AC#4 Full Implementation** - list_tools() now returns parameters [src/agent/tools/mod.rs:131-138]
+   - Changed signature: `Vec<(&str, &str)>` → `Vec<(String, String, Value)>`
+   - Now includes name, description, AND parameter schema
+   - Fully satisfies AC#4 requirement
+
+7. ✅ **OpenAI API Compliance** - Added 'strict: false' field [src/agent/tools/mod.rs:170-179]
+   - OpenAI function format now includes 'strict' field
+   - Compatible with OpenAI API v1.0+ specification
+
+8. ✅ **Empty Tool Name Handling** - tool_name() now handles empty names [src/agent/tools/types.rs:115-128]
+   - Returns "<unnamed>" for empty/whitespace-only names
+   - Prevents confusing empty error messages
+   - Better debugging experience
+
+9. ✅ **Tool Result Formatting Tests** - Added validation tests [tests/tool_integration_tests.rs:522-603]
+   - New test: `test_tool_result_formatting` verifies string format
+   - New test: `test_tool_result_format_consistency` validates JSON results
+   - Proves Task 5.4 is properly implemented
+
+**MEDIUM Severity Fixes:**
+
+10. ✅ **Performance Optimization** - Tool definitions now cached [src/agent/tools/mod.rs:158-189]
+    - Cache stored in `Arc<RwLock<Option<Vec<Value>>>>`
+    - Invalidated on register/unregister
+    - Eliminates O(n) serialization on every LLM request
+
+11. ✅ **Documentation** - Enhanced ToolExecutionContext docs [src/agent/tools/types.rs:138-160]
+    - Documented when channel/chat_id are None
+    - Clarified usage in non-conversation contexts
+    - Improved developer experience
+
+**Test Coverage After Review:**
+- 35 unit tests in types.rs and mod.rs
+- 15 integration tests (added 2 new)
+- 273 total library tests pass
+- Zero test regressions
+
+**Architecture Improvements:**
+- Thread-safe by default (no external synchronization needed)
+- Better error handling with validation
+- Performance improvements through caching
+- More robust against edge cases
 
 ---
 

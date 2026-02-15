@@ -11,6 +11,78 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+/// Validates that a JSON value is a valid JSON Schema
+///
+/// Basic validation: checks for required fields and structure
+fn validate_json_schema(schema: &Value) -> Result<(), String> {
+    if !schema.is_object() {
+        return Err("Schema must be an object".to_string());
+    }
+    
+    let obj = schema.as_object().unwrap();
+    
+    // Check for required 'type' field
+    if !obj.contains_key("type") {
+        return Err("Schema must have a 'type' field".to_string());
+    }
+    
+    let schema_type = obj.get("type").and_then(|v| v.as_str());
+    if schema_type != Some("object") {
+        return Err("Schema type must be 'object' for tool parameters".to_string());
+    }
+    
+    // If properties exist, validate it's an object
+    if let Some(props) = obj.get("properties") {
+        if !props.is_object() {
+            return Err("Schema 'properties' must be an object".to_string());
+        }
+    }
+    
+    // If required exists, validate it's an array
+    if let Some(required) = obj.get("required") {
+        if !required.is_array() {
+            return Err("Schema 'required' must be an array".to_string());
+        }
+    }
+    
+    Ok(())
+}
+
+/// Validates arguments against a JSON schema
+///
+/// Basic validation: checks required fields are present
+pub fn validate_args_against_schema(
+    args: &HashMap<String, Value>,
+    schema: &Value,
+    tool_name: &str,
+) -> ToolResult<()> {
+    // Validate schema structure first
+    validate_json_schema(schema).map_err(|e| ToolError::ExecutionFailed {
+        tool: tool_name.to_string(),
+        message: format!("Invalid tool schema: {}", e),
+    })?;
+    
+    let schema_obj = schema.as_object().unwrap();
+    
+    // Check required fields
+    if let Some(required) = schema_obj.get("required") {
+        if let Some(required_array) = required.as_array() {
+            for req in required_array {
+                if let Some(field_name) = req.as_str() {
+                    if !args.contains_key(field_name) {
+                        return Err(ToolError::InvalidArguments {
+                            tool: tool_name.to_string(),
+                            message: format!("Missing required parameter '{}'", field_name),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    Ok(())
+}
+
 /// Error types for tool execution
 #[derive(thiserror::Error, Debug, Clone, PartialEq)]
 pub enum ToolError {
@@ -54,14 +126,21 @@ impl ToolError {
     /// Get the tool name from the error
     ///
     /// Returns the name of the tool that generated this error.
+    /// If the name is empty, returns "<unnamed>" for better debugging.
     pub fn tool_name(&self) -> &str {
-        match self {
-            ToolError::NotFound(name) => name,
-            ToolError::InvalidArguments { tool, .. } => tool,
-            ToolError::ExecutionFailed { tool, .. } => tool,
-            ToolError::ExecutionFailedRecoverable { tool, .. } => tool,
-            ToolError::PermissionDenied { tool, .. } => tool,
-            ToolError::Timeout { tool, .. } => tool,
+        let name = match self {
+            ToolError::NotFound(name) => name.as_str(),
+            ToolError::InvalidArguments { tool, .. } => tool.as_str(),
+            ToolError::ExecutionFailed { tool, .. } => tool.as_str(),
+            ToolError::ExecutionFailedRecoverable { tool, .. } => tool.as_str(),
+            ToolError::PermissionDenied { tool, .. } => tool.as_str(),
+            ToolError::Timeout { tool, .. } => tool.as_str(),
+        };
+        
+        if name.trim().is_empty() {
+            "<unnamed>"
+        } else {
+            name
         }
     }
 }
@@ -73,11 +152,23 @@ pub type ToolResult<T> = std::result::Result<T, ToolError>;
 ///
 /// Provides tools with information about the current execution environment
 /// and conversation context.
+///
+/// # Fields
+///
+/// * `channel` - The communication channel being used (e.g., "telegram", "cli").
+///   Will be `None` if the tool is executed outside of a conversation context
+///   (e.g., during testing or direct API calls).
+///
+/// * `chat_id` - The unique identifier for the current conversation or user.
+///   Will be `None` if the tool is executed outside of a conversation context.
+///   Tools should handle this gracefully when user identification is required.
 #[derive(Debug, Clone, Default)]
 pub struct ToolExecutionContext {
     /// Channel for the current conversation (e.g., "telegram", "cli")
+    /// None when executing outside a conversation context
     pub channel: Option<String>,
     /// Chat/user identifier for the current conversation
+    /// None when executing outside a conversation context
     pub chat_id: Option<String>,
 }
 
@@ -160,6 +251,13 @@ pub trait Tool: Send + Sync {
     ///
     /// The schema describes the expected parameters and their types,
     /// which the LLM uses to generate proper tool calls.
+    /// 
+    /// # Schema Validation
+    /// 
+    /// The returned schema MUST be a valid JSON Schema with:
+    /// - `type: "object"` at the root level
+    /// - `properties` object defining parameter types
+    /// - `required` array listing mandatory parameters
     fn parameters(&self) -> Value;
 
     /// Executes the tool with the given arguments

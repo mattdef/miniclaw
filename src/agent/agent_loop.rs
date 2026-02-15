@@ -343,7 +343,7 @@ impl AgentLoop {
             futures.push(async move {
                 let tool_name = tool_call.name.clone();
 
-                match self.execute_single_tool(tool_call, &tool_registry).await {
+                match Self::execute_single_tool(tool_call, &tool_registry).await {
                     Ok(result) => {
                         tracing::info!(tool = %tool_name, tool_id = %tool_call_id, "Tool executed successfully");
                         (tool_call_id, result)
@@ -366,27 +366,23 @@ impl AgentLoop {
 
     /// Executes a single tool call
     async fn execute_single_tool(
-        &self,
         tool_call: LlmToolCall,
         tool_registry: &ToolRegistry,
     ) -> Result<String> {
-        let tool = tool_registry.get(&tool_call.name).ok_or_else(|| {
-            AgentError::ToolExecutionError(format!("Tool '{}' not found", tool_call.name))
-        })?;
-
         // Parse arguments from JSON string
         let args: std::collections::HashMap<String, serde_json::Value> =
             serde_json::from_str(&tool_call.arguments).map_err(|e| {
                 AgentError::ToolExecutionError(format!("Failed to parse tool arguments: {}", e))
             })?;
 
-        // Execute the tool
+        // Execute the tool (includes validation and timeout)
         let ctx = crate::agent::tools::ToolExecutionContext {
             channel: None,
             chat_id: None,
         };
 
-        tool.execute(args, &ctx)
+        tool_registry
+            .execute_tool(&tool_call.name, args, &ctx)
             .await
             .map_err(|e| AgentError::ToolExecutionError(e.to_string()))
     }

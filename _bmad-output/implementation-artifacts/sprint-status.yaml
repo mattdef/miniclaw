@@ -82,7 +82,7 @@ development_status:
 
   # Epic 6: Tool System - Core Tools
   epic-6: in-progress
-  6-1-tool-registry-and-trait: review
+  6-1-tool-registry-and-trait: done
   6-2-filesystem-tool: backlog
   6-3-exec-tool: backlog
   6-4-web-tool: backlog

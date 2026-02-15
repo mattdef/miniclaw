@@ -96,7 +96,7 @@ impl Tool for TestTool {
 /// Integration test: Complete tool registration and execution flow
 #[tokio::test]
 async fn test_tool_registration_and_execution_flow() {
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
 
     // Register multiple tools
     let tool1 = TestTool::new("multiply", "Multiplies input");
@@ -129,7 +129,7 @@ async fn test_tool_registration_and_execution_flow() {
 /// Integration test: Tool listing and discovery
 #[test]
 fn test_tool_discovery_via_listing() {
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
 
     registry
         .register(Box::new(TestTool::new("tool_a", "First tool")))
@@ -146,10 +146,10 @@ fn test_tool_discovery_via_listing() {
     assert_eq!(tools.len(), 3);
 
     // Verify all tools are listed
-    let names: Vec<&str> = tools.iter().map(|(n, _)| *n).collect();
-    assert!(names.contains(&"tool_a"));
-    assert!(names.contains(&"tool_b"));
-    assert!(names.contains(&"tool_c"));
+    let names: Vec<String> = tools.iter().map(|(n, _, _)| n.clone()).collect();
+    assert!(names.contains(&"tool_a".to_string()));
+    assert!(names.contains(&"tool_b".to_string()));
+    assert!(names.contains(&"tool_c".to_string()));
 
     // Test contains()
     assert!(registry.contains("tool_a"));
@@ -161,7 +161,7 @@ fn test_tool_discovery_via_listing() {
 /// Integration test: Tool definitions for LLM
 #[test]
 fn test_tool_definitions_for_llm() {
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
 
     registry
         .register(Box::new(TestTool::new("calculator", "Performs calculations")))
@@ -187,7 +187,7 @@ fn test_tool_definitions_for_llm() {
 /// Integration test: Error propagation
 #[tokio::test]
 async fn test_tool_error_propagation() {
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
 
     // Register a failing tool
     registry
@@ -232,7 +232,7 @@ async fn test_tool_not_found_error() {
 /// Integration test: Tool registration conflict
 #[test]
 fn test_tool_registration_conflict() {
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
 
     let tool1 = TestTool::new("unique_tool", "First registration");
     let tool2 = TestTool::new("unique_tool", "Duplicate name");
@@ -256,7 +256,7 @@ fn test_tool_registration_conflict() {
 /// Integration test: Tool unregistration
 #[tokio::test]
 async fn test_tool_unregistration() {
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
 
     registry
         .register(Box::new(TestTool::new("temp_tool", "Temporary tool")))
@@ -287,7 +287,8 @@ fn test_concurrent_tool_access() {
     use std::sync::Arc;
     use std::thread;
 
-    let registry = Arc::new(std::sync::Mutex::new(ToolRegistry::new()));
+    // ToolRegistry is now thread-safe with internal RwLock, no need for external Mutex
+    let registry = Arc::new(ToolRegistry::new());
 
     let mut handles = vec![];
 
@@ -296,7 +297,6 @@ fn test_concurrent_tool_access() {
         let reg = Arc::clone(&registry);
         let handle = thread::spawn(move || {
             let tool = TestTool::new(format!("thread_tool_{}", i), "Concurrent tool");
-            let mut reg = reg.lock().unwrap();
             reg.register(Box::new(tool)).unwrap();
         });
         handles.push(handle);
@@ -308,11 +308,10 @@ fn test_concurrent_tool_access() {
     }
 
     // Verify all tools were registered
-    let reg = registry.lock().unwrap();
-    assert_eq!(reg.len(), 5);
+    assert_eq!(registry.len(), 5);
 
     for i in 0..5 {
-        assert!(reg.contains(&format!("thread_tool_{}", i)));
+        assert!(registry.contains(&format!("thread_tool_{}", i)));
     }
 }
 
@@ -346,7 +345,7 @@ async fn test_tool_execution_with_context() {
         }
     }
 
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
     registry.register(Box::new(ContextAwareTool)).unwrap();
 
     // Execute with context
@@ -430,7 +429,7 @@ async fn test_complex_parameter_handling() {
         }
     }
 
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
     registry.register(Box::new(ComplexTool)).unwrap();
 
     let mut args = HashMap::new();
@@ -503,7 +502,7 @@ fn test_tool_definition_serialization() {
 /// Integration test: Error message clarity
 #[tokio::test]
 async fn test_error_messages_are_clear() {
-    let mut registry = ToolRegistry::new();
+    let registry = ToolRegistry::new();
 
     registry
         .register(Box::new(TestTool::new("test", "Test tool")))
@@ -521,3 +520,74 @@ async fn test_error_messages_are_clear() {
     assert!(error_msg.contains("test"));
     assert!(error_msg.contains("Invalid arguments") || error_msg.contains("Missing"));
 }
+
+/// Integration test: Tool result formatting
+#[tokio::test]
+async fn test_tool_result_formatting() {
+    let registry = ToolRegistry::new();
+    
+    registry
+        .register(Box::new(TestTool::new("formatter", "Formats results")))
+        .unwrap();
+    
+    let mut args = HashMap::new();
+    args.insert("input".to_string(), json!("Hello World"));
+    args.insert("multiplier".to_string(), json!(2));
+    
+    let ctx = ToolExecutionContext::default();
+    let result = registry.execute_tool("formatter", args, &ctx).await;
+    
+    assert!(result.is_ok());
+    let formatted_result = result.unwrap();
+    
+    // Verify result is a properly formatted string
+    assert!(formatted_result.contains("Hello World"));
+    assert!(formatted_result.contains("2"));
+    assert_eq!(formatted_result, "Hello World x 2");
+}
+
+/// Integration test: Tool result format consistency
+#[tokio::test]
+async fn test_tool_result_format_consistency() {
+    struct JsonResultTool;
+    
+    #[async_trait::async_trait]
+    impl Tool for JsonResultTool {
+        fn name(&self) -> &str {
+            "json_tool"
+        }
+        
+        fn description(&self) -> &str {
+            "Returns JSON formatted results"
+        }
+        
+        fn parameters(&self) -> Value {
+            json!({"type": "object", "properties": {}, "required": []})
+        }
+        
+        async fn execute(
+            &self,
+            _args: HashMap<String, Value>,
+            _ctx: &ToolExecutionContext,
+        ) -> ToolResult<String> {
+            // Tools should return String, even if the content is JSON
+            Ok(json!({"status": "success", "data": 42}).to_string())
+        }
+    }
+    
+    let registry = ToolRegistry::new();
+    registry.register(Box::new(JsonResultTool)).unwrap();
+    
+    let result = registry
+        .execute_tool("json_tool", HashMap::new(), &ToolExecutionContext::default())
+        .await;
+    
+    assert!(result.is_ok());
+    let json_string = result.unwrap();
+    
+    // Verify it's a valid JSON string
+    let parsed: serde_json::Value = serde_json::from_str(&json_string).unwrap();
+    assert_eq!(parsed["status"], "success");
+    assert_eq!(parsed["data"], 42);
+}
+
