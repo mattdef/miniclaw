@@ -161,6 +161,7 @@ impl ContextBuilderImpl {
             role: LlmRole::System,
             content,
             tool_calls: None,
+            tool_call_id: None,
         }
     }
 
@@ -176,6 +177,7 @@ impl ContextBuilderImpl {
             role: LlmRole::System,
             content,
             tool_calls: None,
+            tool_call_id: None,
         }
     }
 
@@ -211,6 +213,7 @@ impl ContextBuilderImpl {
             role: LlmRole::System,
             content,
             tool_calls: None,
+            tool_call_id: None,
         })
     }
 
@@ -283,6 +286,7 @@ impl ContextBuilderImpl {
             role: LlmRole::System,
             content,
             tool_calls: None,
+            tool_call_id: None,
         })
     }
 
@@ -311,6 +315,7 @@ impl ContextBuilderImpl {
             role: LlmRole::System,
             content,
             tool_calls: None,
+            tool_call_id: None,
         })
     }
 
@@ -351,6 +356,7 @@ impl ContextBuilderImpl {
                             })
                             .collect()
                     }),
+                    tool_call_id: None,
                 }
             })
             .collect()
@@ -458,6 +464,7 @@ impl ContextBuilder for ContextBuilderImpl {
             role: LlmRole::User,
             content: current_message.content.clone(),
             tool_calls: None,
+            tool_call_id: None,
         };
         context.push(current_msg.clone());
 
@@ -632,6 +639,7 @@ mod tests {
             role: LlmRole::User,
             content: "Current".to_string(),
             tool_calls: None,
+            tool_call_id: None,
         };
 
         let messages = vec![
@@ -639,16 +647,19 @@ mod tests {
                 role: LlmRole::System,
                 content: "System".to_string(),
                 tool_calls: None,
+            tool_call_id: None,
             },
             LlmMessage {
                 role: LlmRole::User,
                 content: "Old message".to_string(),
                 tool_calls: None,
+            tool_call_id: None,
             },
             LlmMessage {
                 role: LlmRole::Assistant,
                 content: "Response".to_string(),
                 tool_calls: None,
+            tool_call_id: None,
             },
             current.clone(),
         ];

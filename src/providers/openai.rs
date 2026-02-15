@@ -59,6 +59,9 @@ struct OpenRouterMessage {
     /// Tool calls requested by the assistant
     #[serde(skip_serializing_if = "Option::is_none")]
     tool_calls: Option<Vec<OpenRouterToolCall>>,
+    /// Tool call ID for tool result messages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool_call_id: Option<String>,
 }
 
 /// OpenRouter tool call format
@@ -150,13 +153,39 @@ impl OpenRouterProvider {
     /// # Returns
     ///
     /// A new `OpenRouterProvider` instance
+    ///
+    /// # Panics
+    ///
+    /// Panics if the HTTP client fails to build (extremely rare in practice)
     pub fn new(config: OpenRouterConfig) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(config.timeout_seconds))
             .build()
-            .expect("Failed to build HTTP client");
+            .unwrap_or_else(|e| {
+                panic!("Failed to build HTTP client: {}. This should never happen unless TLS initialization fails.", e)
+            });
 
         Self { config, client }
+    }
+
+    /// Creates a new OpenRouter provider with the given configuration, returning an error if client build fails
+    ///
+    /// This is a fallible version of `new()` that returns a Result instead of panicking.
+    ///
+    /// # Arguments
+    ///
+    /// * `config` - OpenRouter configuration including API key and settings
+    ///
+    /// # Returns
+    ///
+    /// A new `OpenRouterProvider` instance or an error if HTTP client cannot be built
+    pub fn try_new(config: OpenRouterConfig) -> Result<Self, ProviderError> {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(config.timeout_seconds))
+            .build()
+            .map_err(|e| ProviderError::config(format!("Failed to build HTTP client: {}", e)))?;
+
+        Ok(Self { config, client })
     }
 
     /// Builds the OpenRouter API request body from messages and tools
@@ -188,6 +217,7 @@ impl OpenRouterProvider {
                         })
                         .collect()
                 }),
+                tool_call_id: msg.tool_call_id,
             })
             .collect();
 
@@ -260,7 +290,6 @@ impl OpenRouterProvider {
         let url = format!("{}/chat/completions", self.config.base_url);
         let max_retries = 3;
         let mut attempt = 0;
-        let mut last_error: Option<ProviderError> = None;
 
         loop {
             attempt += 1;
@@ -346,7 +375,7 @@ impl OpenRouterProvider {
                                 continue;
                             }
                             return Err(ProviderError::provider(
-                                format!("Server error ({}): {}", status, error_text),
+                                format!("Server error ({}) after {} attempts: {}", status, attempt, error_text),
                                 Some(status.as_u16().to_string()),
                             ));
                         }
@@ -382,7 +411,6 @@ impl OpenRouterProvider {
                             "Request failed, retrying"
                         );
                         tokio::time::sleep(Duration::from_secs(delay)).await;
-                        last_error = Some(provider_error);
                         continue;
                     }
 
@@ -410,7 +438,12 @@ impl LlmProvider for OpenRouterProvider {
 
         // Build request
         let request = self.build_request(messages, tools, model);
-        debug!(request = ?request, "Built request");
+        debug!(
+            model = model,
+            message_count = request.messages.len(),
+            has_tools = !request.tools.is_empty(),
+            "Built request (headers omitted for security)"
+        );
 
         // Make request with retry logic
         let response = self.make_request_with_retry(&request).await?;
@@ -533,6 +566,7 @@ mod tests {
                     role: "assistant".to_string(),
                     content: Some("Hello!".to_string()),
                     tool_calls: None,
+                    tool_call_id: None,
                 },
                 finish_reason: Some("stop".to_string()),
             }],
@@ -568,6 +602,7 @@ mod tests {
                             arguments: r#"{"key": "value"}"#.to_string(),
                         },
                     }]),
+                    tool_call_id: None,
                 },
                 finish_reason: Some("tool_calls".to_string()),
             }],
@@ -683,5 +718,47 @@ mod tests {
 
         // Test provider name
         assert_eq!(provider.provider_name(), "openrouter");
+    }
+
+    #[test]
+    fn test_tool_message_with_tool_call_id() {
+        let provider = create_test_provider();
+        let messages = vec![LlmMessage::new(LlmRole::Tool, "Tool result")
+            .with_tool_call_id("call_abc123")];
+
+        let request = provider.build_request(messages, vec![], "test-model");
+
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0].role, "tool");
+        assert_eq!(
+            request.messages[0].tool_call_id.as_deref(),
+            Some("call_abc123")
+        );
+    }
+
+    #[test]
+    fn test_try_new_success() {
+        let config = create_test_config();
+        let result = OpenRouterProvider::try_new(config);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_error_retryability() {
+        // Network errors should be retryable
+        let err = ProviderError::network("Connection failed");
+        assert!(err.is_retryable());
+
+        // Rate limit errors should be retryable
+        let err = ProviderError::rate_limit("Too many requests", Some(60));
+        assert!(err.is_retryable());
+
+        // Auth errors should not be retryable
+        let err = ProviderError::auth("Invalid API key");
+        assert!(!err.is_retryable());
+
+        // Invalid request errors should not be retryable
+        let err = ProviderError::invalid_request("Bad parameter");
+        assert!(!err.is_retryable());
     }
 }

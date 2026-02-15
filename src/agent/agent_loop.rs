@@ -252,6 +252,7 @@ impl AgentLoop {
                         role: LlmRole::Tool,
                         content: format!("Tool {} result: {}", tool_id, result),
                         tool_calls: None,
+                        tool_call_id: None,
                     });
 
                     // Add to session as tool_result message

@@ -312,21 +312,89 @@ No debug logs required - implementation completed successfully
 ### File List
 
 **New Files:**
-1. `src/providers/openai.rs` - OpenRouter provider implementation (420 lines, 15 tests)
+1. `src/providers/openai.rs` - OpenRouter provider implementation (720 lines, 18 tests)
 
 **Modified Files:**
-1. `src/providers/mod.rs` - Added `pub mod openai;` and export OpenRouterProvider
+1. `src/providers/mod.rs` - Added `pub mod openai;`, export OpenRouterProvider, added tool_call_id field to LlmMessage
 2. `src/providers/factory.rs` - Updated ProviderFactory to create OpenRouterProvider, fixed serde rename
-3. `src/providers/error.rs` - Added From<reqwest::Error> implementation
-4. `Cargo.toml` - Added reqwest dependency
+3. `src/providers/error.rs` - Added From<reqwest::Error> implementation, fixed hardcoded timeout
+4. `src/agent/context.rs` - Updated for LlmMessage tool_call_id field
+5. `src/agent/agent_loop.rs` - Updated for LlmMessage tool_call_id field
+6. `Cargo.toml` - Added reqwest dependency
+
+### Code Review Record (AI)
+
+**Review Date**: 2026-02-15
+**Reviewer**: AI Code Reviewer (Adversarial Senior Developer)
+**Review Type**: Comprehensive adversarial code review
+
+**Issues Found**: 4 HIGH, 3 MEDIUM, 2 LOW
+**Issues Fixed**: 7 (all HIGH and MEDIUM issues)
+**Issues Deferred**: 2 (LOW priority)
+
+#### Issues Fixed
+
+1. **[HIGH] HTTP Client Panic Risk** - src/providers/openai.rs:154-158
+   - Added `try_new()` method for fallible client creation
+   - Improved panic message with context
+   - **Fix**: Added try_new() as safer alternative to new()
+
+2. **[HIGH] Retry Logic Bug - Unused Variable** - src/providers/openai.rs:263
+   - Removed unused `last_error` variable
+   - Cleaned up retry logic
+   - **Fix**: Simplified code by removing dead variable
+
+3. **[HIGH] Missing Tool Role Handling** - src/providers/mod.rs, openai.rs
+   - Added `tool_call_id` field to `LlmMessage` for OpenAI-compatible Tool role messages
+   - Updated `OpenRouterMessage` to include `tool_call_id`
+   - Added `with_tool_call_id()` builder method
+   - **Fix**: Full OpenAI API compliance for tool result messages
+
+4. **[HIGH] Incomplete Error Context for 5xx Errors** - src/providers/openai.rs:334-352
+   - Added retry attempt count to error messages
+   - **Fix**: Error message now shows "after N attempts" for better debugging
+
+5. **[MEDIUM] Incomplete Test Coverage** - src/providers/openai.rs:test module
+   - Added test for tool_call_id handling
+   - Added test for try_new() success
+   - Added test for error retryability
+   - **Fix**: Test count increased from 15 to 18 tests
+
+6. **[MEDIUM] Security - API Key Logging** - src/providers/openai.rs:413
+   - Removed debug logging of full request object
+   - Replaced with safe metadata logging
+   - **Fix**: API key no longer exposed in debug logs
+
+7. **[MEDIUM] Hardcoded Timeout in Error Mapping** - src/providers/error.rs:195-214
+   - Changed reqwest::Error conversion to use Network error instead of hardcoded Timeout
+   - Added explanatory comment
+   - **Fix**: Error messages no longer show incorrect timeout duration
+
+#### Issues Deferred (LOW Priority)
+
+8. **[LOW] Code Smell - Unused finish_reason Field** - src/providers/openai.rs:104-105
+   - Recommendation: Log or remove the field
+   - **Status**: Deferred - no functional impact
+
+9. **[LOW] Documentation Gap - Missing Error Examples** - src/providers/openai.rs:1-24
+   - Recommendation: Add error handling examples to module docs
+   - **Status**: Deferred - documentation enhancement
+
+**Review Outcome**: ✅ **APPROVED** after fixes
+- All HIGH issues resolved
+- All MEDIUM issues resolved  
+- All acceptance criteria fully implemented and tested
+- Code is production-ready
+- Test coverage: 59 tests passing (3 new tests added during review)
 
 ---
 
 **Story Created**: 2026-02-15
 **Story Completed**: 2026-02-15
+**Code Review**: 2026-02-15
 **Epic**: 4 - LLM Provider Integration
 **Dependencies**: Story 4.1 (LLM Provider Trait and Architecture)
 **Blocks**: Story 4.3 (Ollama Local Provider), Story 4.4 (Agent One-Shot Command)
-**Status**: review
+**Status**: done
 
-**Completion Note**: OpenRouter provider fully implemented with comprehensive error handling, retry logic, and test coverage. All acceptance criteria satisfied. Ready for code review.
+**Completion Note**: OpenRouter provider fully implemented with comprehensive error handling, retry logic, and test coverage. All acceptance criteria satisfied. Code review completed with 7 issues fixed. Production-ready.

@@ -68,7 +68,7 @@ development_status:
   # Epic 4: LLM Provider Integration
   epic-4: in-progress
   4-1-llm-provider-trait-and-architecture: done
-  4-2-openai-compatible-provider: review
+  4-2-openai-compatible-provider: done
   4-3-ollama-local-provider: backlog
   4-4-agent-one-shot-command: backlog
   epic-4-retrospective: optional

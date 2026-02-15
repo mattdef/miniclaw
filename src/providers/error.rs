@@ -195,10 +195,15 @@ impl From<serde_json::Error> for ProviderError {
 impl From<reqwest::Error> for ProviderError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
-            Self::Timeout { seconds: 30 }
+            // Note: We don't include the specific timeout duration here because
+            // the From trait doesn't have access to the provider's configuration.
+            // The actual timeout value is set when creating the HTTP client.
+            Self::Network {
+                message: format!("Request timed out: {}", err),
+            }
         } else if err.is_connect() {
             Self::Network {
-                message: err.to_string(),
+                message: format!("Connection failed: {}", err),
             }
         } else if err.is_status() {
             // HTTP status error - will be handled separately in the provider

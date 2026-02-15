@@ -54,6 +54,9 @@ pub struct LlmMessage {
     /// Optional tool calls requested by the assistant
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<LlmToolCall>>,
+    /// Optional tool call ID for tool result messages
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl LlmMessage {
@@ -63,12 +66,19 @@ impl LlmMessage {
             role,
             content: content.into(),
             tool_calls: None,
+            tool_call_id: None,
         }
     }
 
     /// Creates a new message with tool calls
     pub fn with_tool_calls(mut self, tool_calls: Vec<LlmToolCall>) -> Self {
         self.tool_calls = Some(tool_calls);
+        self
+    }
+
+    /// Creates a new message with a tool call ID (for tool result messages)
+    pub fn with_tool_call_id(mut self, tool_call_id: impl Into<String>) -> Self {
+        self.tool_call_id = Some(tool_call_id.into());
         self
     }
 
