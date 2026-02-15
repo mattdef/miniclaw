@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::providers::ollama::OllamaProvider;
 use crate::providers::openai::OpenRouterProvider;
 use crate::providers::{BoxedProvider, ProviderError};
 
@@ -270,11 +271,10 @@ impl ProviderFactory {
                 let provider = OpenRouterProvider::new(config);
                 Ok(Box::new(provider))
             }
-            ProviderConfig::Ollama(_config) => {
-                // TODO: Create Ollama provider when implemented in Story 4.3
-                Err(ProviderError::config(
-                    "Ollama provider not yet implemented. See Story 4.3",
-                ))
+            ProviderConfig::Ollama(config) => {
+                // Create Ollama provider with the given configuration using fallible constructor
+                let provider = OllamaProvider::try_new(config)?;
+                Ok(Box::new(provider))
             }
             #[cfg(test)]
             ProviderConfig::Mock => {
@@ -411,15 +411,15 @@ mod tests {
     }
 
     #[test]
-    fn test_factory_create_ollama_returns_error() {
+    fn test_factory_create_ollama_success() {
         let config = ProviderConfig::ollama();
         let result = ProviderFactory::create(config);
 
-        // Should fail since Ollama provider not implemented yet (Story 4.3)
-        assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.to_string().contains("not yet implemented"));
-        }
+        // Should succeed now that Ollama provider is implemented
+        assert!(result.is_ok());
+        let provider = result.unwrap();
+        assert_eq!(provider.provider_name(), "ollama");
+        assert_eq!(provider.default_model(), "llama3.2");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::{CommandFactory, Parser, Subcommand};
 
-use crate::config::{Config, load_config, run_onboarding};
+use crate::config::{load_config, run_onboarding, Config};
 
 #[derive(Parser)]
 #[command(name = "miniclaw")]
@@ -73,6 +73,37 @@ pub enum Commands {
         #[arg(value_name = "COMMAND")]
         command: Option<String>,
     },
+
+    /// Send a single message to the agent
+    ///
+    /// Executes a one-shot interaction with the agent, processing the message
+    /// and returning the response without running the full gateway daemon.
+    ///
+    /// # Examples
+    ///
+    /// Basic usage:
+    /// ```bash
+    /// miniclaw agent -m "Hello, how are you?"
+    /// ```
+    ///
+    /// With model override:
+    /// ```bash
+    /// miniclaw agent -M "google/gemini-2.5-flash" -m "Explain Rust ownership"
+    /// ```
+    ///
+    /// With verbose mode:
+    /// ```bash
+    /// miniclaw --verbose agent -m "Debug this code"
+    /// ```
+    Agent {
+        /// Message to send to the agent
+        #[arg(short, long, help = "Message to send to the agent")]
+        message: String,
+
+        /// Model to use for this request (overrides config)
+        #[arg(short = 'M', long, help = "Model to use for this request")]
+        model: Option<String>,
+    },
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
@@ -96,6 +127,10 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             tracing::debug!("Executing help command");
             handle_help(command)?;
             Ok(())
+        }
+        Some(Commands::Agent { message, model }) => {
+            tracing::debug!("Executing agent command");
+            handle_agent(message, model, &config, cli.verbose)
         }
         None => {
             tracing::debug!("No subcommand provided, showing help");
@@ -123,6 +158,42 @@ fn handle_onboard(yes: bool, path: Option<String>, config: &Config) -> anyhow::R
         path,
         yes,
     )
+}
+
+fn handle_agent(
+    message: String,
+    model: Option<String>,
+    config: &Config,
+    verbose: bool,
+) -> anyhow::Result<()> {
+    use crate::agent::execute_one_shot;
+
+    tracing::info!(message = %message, model = ?model, "Starting agent one-shot command");
+
+    // Create a tokio runtime for the async execution
+    let rt = tokio::runtime::Runtime::new()
+        .context("Failed to create tokio runtime")?;
+
+    // Execute the one-shot command
+    let result = rt.block_on(async {
+        execute_one_shot(message, model, config, verbose).await
+    });
+
+    // Explicitly shutdown the runtime to ensure clean resource cleanup
+    rt.shutdown_timeout(std::time::Duration::from_secs(5));
+
+    match result {
+        Ok(response) => {
+            // Print the response to stdout
+            println!("{}", response);
+            Ok(())
+        }
+        Err(e) => {
+            // Print error to stderr and return error for proper exit code
+            eprintln!("Error: {}", e);
+            Err(e)
+        }
+    }
 }
 
 pub fn handle_help(command: Option<String>) -> anyhow::Result<()> {
@@ -242,5 +313,91 @@ mod tests {
         {
             assert_eq!(p, "/tmp/test");
         }
+    }
+
+    #[test]
+    fn test_agent_command_parsing() {
+        let cli = Cli::parse_from(["miniclaw", "agent", "-m", "Hello"]);
+        assert!(!cli.verbose);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Agent {
+                message,
+                model: None
+            }) if message == "Hello"
+        ));
+    }
+
+    #[test]
+    fn test_agent_with_long_message_flag() {
+        let cli = Cli::parse_from(["miniclaw", "agent", "--message", "Test message"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Agent {
+                message,
+                model: None
+            }) if message == "Test message"
+        ));
+    }
+
+    #[test]
+    fn test_agent_with_model_override() {
+        let cli = Cli::parse_from(["miniclaw", "agent", "-M", "custom-model", "-m", "Hello"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Agent {
+                message,
+                model: Some(m)
+            }) if message == "Hello" && m == "custom-model"
+        ));
+    }
+
+    #[test]
+    fn test_agent_with_long_model_flag() {
+        let cli = Cli::parse_from([
+            "miniclaw",
+            "agent",
+            "--model",
+            "google/gemini-2.5-flash",
+            "--message",
+            "Test",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Agent {
+                message,
+                model: Some(m)
+            }) if message == "Test" && m == "google/gemini-2.5-flash"
+        ));
+    }
+
+    #[test]
+    fn test_agent_command_with_verbose() {
+        let cli = Cli::parse_from(["miniclaw", "--verbose", "agent", "-m", "Hello"]);
+        assert!(cli.verbose);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Agent {
+                message,
+                model: None
+            }) if message == "Hello"
+        ));
+    }
+
+    #[test]
+    fn test_agent_complex_message() {
+        let cli = Cli::parse_from([
+            "miniclaw",
+            "agent",
+            "-m",
+            "What is 2 + 2?",
+        ]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Agent {
+                message,
+                model: None
+            }) if message == "What is 2 + 2?"
+        ));
     }
 }

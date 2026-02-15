@@ -33,6 +33,7 @@ pub mod error;
 pub mod factory;
 #[cfg(test)]
 pub mod mock;
+pub mod ollama;
 pub mod openai;
 
 // Export error types
@@ -43,6 +44,9 @@ pub use factory::{OllamaConfig, OpenRouterConfig, ProviderConfig, ProviderFactor
 
 // Export OpenAI/OpenRouter provider
 pub use openai::OpenRouterProvider;
+
+// Export Ollama provider
+pub use ollama::OllamaProvider;
 
 /// Represents a message in the conversation for LLM context
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
