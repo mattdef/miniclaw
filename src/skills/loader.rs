@@ -260,7 +260,7 @@ fn parse_skill(content: &str, skill_path: &Path) -> Result<Skill> {
 /// - `param1` (string, required): Description
 /// - `param2` (number, optional): Description
 /// ```
-fn parse_parameters(content: &str, directory_name: &str) -> Result<Vec<SkillParameter>> {
+fn parse_parameters(content: &str, _directory_name: &str) -> Result<Vec<SkillParameter>> {
     let mut parameters = Vec::new();
     let mut in_parameters = false;
 
