@@ -35,8 +35,8 @@ pub struct MockLlmProvider {
     error: Arc<Mutex<Option<ProviderError>>>,
     /// Default model name
     default_model: String,
-    /// Provider name
-    name: String,
+    /// Provider name (stored as &'static str for trait compliance)
+    name: &'static str,
     /// Call counter for tracking
     call_count: Arc<Mutex<usize>>,
     /// Last messages received (for verification)
@@ -50,18 +50,21 @@ impl MockLlmProvider {
             response: Arc::new(Mutex::new(LlmResponse::new("Mock response"))),
             error: Arc::new(Mutex::new(None)),
             default_model: "mock-model".to_string(),
-            name: "MockProvider".to_string(),
+            name: "MockProvider",
             call_count: Arc::new(Mutex::new(0)),
             last_messages: Arc::new(Mutex::new(None)),
         }
     }
 
     /// Creates a new mock provider with a specific name
-    pub fn with_name(name: impl Into<String>) -> Self {
-        let name = name.into();
+    pub fn with_name(name: &'static str) -> Self {
         Self {
-            name: name.clone(),
-            ..Self::new()
+            name,
+            response: Arc::new(Mutex::new(LlmResponse::new("Mock response"))),
+            error: Arc::new(Mutex::new(None)),
+            default_model: "mock-model".to_string(),
+            call_count: Arc::new(Mutex::new(0)),
+            last_messages: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -154,13 +157,14 @@ impl LlmProvider for MockLlmProvider {
     }
 
     fn provider_name(&self) -> &'static str {
-        Box::leak(self.name.clone().into_boxed_str())
+        self.name
     }
 }
 
 /// Builder for creating mock providers with specific configurations
 pub struct MockProviderBuilder {
     provider: MockLlmProvider,
+    custom_name: Option<&'static str>,
 }
 
 impl MockProviderBuilder {
@@ -168,6 +172,7 @@ impl MockProviderBuilder {
     pub fn new() -> Self {
         Self {
             provider: MockLlmProvider::new(),
+            custom_name: None,
         }
     }
 
@@ -200,13 +205,16 @@ impl MockProviderBuilder {
     }
 
     /// Sets the provider name
-    pub fn name(mut self, name: impl Into<String>) -> Self {
-        self.provider = MockLlmProvider::with_name(name);
+    pub fn name(mut self, name: &'static str) -> Self {
+        self.custom_name = Some(name);
         self
     }
 
     /// Builds the mock provider
-    pub fn build(self) -> MockLlmProvider {
+    pub fn build(mut self) -> MockLlmProvider {
+        if let Some(name) = self.custom_name {
+            self.provider.name = name;
+        }
         self.provider
     }
 }
@@ -295,7 +303,7 @@ mod tests {
         mock.set_response("Custom");
         mock.set_error(ProviderError::network("fail"));
 
-        mock.chat(vec![], vec![], "model").await;
+        let _ = mock.chat(vec![], vec![], "model").await;
         assert_eq!(mock.call_count(), 1);
 
         mock.reset();

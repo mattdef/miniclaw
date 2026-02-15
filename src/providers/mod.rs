@@ -34,8 +34,11 @@ pub mod factory;
 #[cfg(test)]
 pub mod mock;
 
+// Export error types
 pub use error::ProviderError;
-pub use factory::{ProviderConfig, ProviderFactory};
+
+// Export factory types and configs
+pub use factory::{OllamaConfig, OpenRouterConfig, ProviderConfig, ProviderFactory};
 
 /// Represents a message in the conversation for LLM context
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -247,12 +250,22 @@ pub trait LlmProvider: Send + Sync {
     /// # Arguments
     ///
     /// * `messages` - Conversation history
-    /// * `tools` - Available tool definitions in OpenAI format
+    /// * `tools` - Available tool definitions in OpenAI format (JSON values).
+    ///   While `ToolDefinition` provides a typed way to create tools,
+    ///   the trait accepts raw JSON to support provider-specific formats.
+    ///   Use `ToolDefinition::to_openai_format()` to convert.
     /// * `model` - Model name to use for this request
     ///
     /// # Returns
     ///
     /// The LLM response containing content and optional tool calls
+    ///
+    /// # Design Note
+    ///
+    /// The trait accepts `Vec<serde_json::Value>` rather than `Vec<ToolDefinition>`
+    /// to allow flexibility for provider-specific tool formats. Different providers
+    /// may have slight variations in their tool schemas, and using JSON directly
+    /// allows implementations to adapt without changing the trait signature.
     async fn chat(
         &self,
         messages: Vec<LlmMessage>,
