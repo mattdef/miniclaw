@@ -1,21 +1,23 @@
 use crate::session::persistence::Persistence;
 use crate::session::types::{Message, Session};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
-use tracing::{error, info, warn};
+use tracing::{error, info};
+
+pub const PERSISTENCE_INTERVAL_SECS: u64 = 30;
 
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, Session>>>,
-    persistence: Persistence,
+    persistence: Arc<Persistence>,
 }
 
 impl SessionManager {
     pub fn new(sessions_dir: PathBuf) -> Self {
-        let persistence = Persistence::new(sessions_dir);
+        let persistence = Arc::new(Persistence::new(sessions_dir));
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
             persistence,
@@ -108,10 +110,10 @@ impl SessionManager {
 
     pub fn start_auto_persistence(&self) {
         let sessions = Arc::clone(&self.sessions);
-        let persistence = Persistence::new(self.persistence.sessions_dir.clone());
+        let persistence = Arc::clone(&self.persistence);
 
         tokio::spawn(async move {
-            let mut interval = interval(Duration::from_secs(30));
+            let mut interval = interval(Duration::from_secs(PERSISTENCE_INTERVAL_SECS));
             
             loop {
                 interval.tick().await;

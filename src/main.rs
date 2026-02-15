@@ -1,10 +1,5 @@
-mod cli;
-mod config;
-mod session;
-mod skills;
-mod workspace;
-
 use clap::Parser;
+use miniclaw::cli;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 

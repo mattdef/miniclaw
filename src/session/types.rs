@@ -2,6 +2,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 
+pub const MAX_MESSAGES: usize = 50;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Session {
     pub session_id: String,
@@ -22,12 +24,12 @@ impl Session {
             chat_id,
             created_at: now,
             last_accessed: now,
-            messages: VecDeque::with_capacity(50),
+            messages: VecDeque::with_capacity(MAX_MESSAGES),
         }
     }
 
     pub fn add_message(&mut self, message: Message) {
-        if self.messages.len() >= 50 {
+        if self.messages.len() >= MAX_MESSAGES {
             self.messages.pop_front();
         }
         self.messages.push_back(message);

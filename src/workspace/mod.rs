@@ -443,6 +443,18 @@ mod tests {
             assert!(file_path.exists(), "{} should exist", filename);
             assert!(file_path.is_file(), "{} should be a file", filename);
         }
+
+        // Verify sessions directory creation (Story 2.5)
+        let sessions_path = workspace_path.join("sessions");
+        assert!(sessions_path.exists());
+        assert!(sessions_path.is_dir());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let metadata = std::fs::metadata(&sessions_path).unwrap();
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
+        }
     }
 
     #[test]
