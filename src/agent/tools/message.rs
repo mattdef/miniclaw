@@ -1,5 +1,5 @@
 use crate::agent::tools::ToolExecutionContext;
-use crate::agent::tools::{Result, Tool, ToolError};
+use crate::agent::tools::{Tool, ToolError, ToolResult};
 use crate::chat::ChatHub;
 use crate::chat::types::OutboundMessage;
 use serde_json::Value;
@@ -32,7 +32,7 @@ impl MessageTool {
     }
 
     /// Validates a chat_id to ensure it's not empty
-    fn validate_chat_id(chat_id: &str) -> Result<()> {
+    fn validate_chat_id(chat_id: &str) -> ToolResult<()> {
         let trimmed = chat_id.trim();
         if trimmed.is_empty() {
             return Err(ToolError::InvalidArguments {
@@ -56,7 +56,7 @@ impl MessageTool {
     }
 
     /// Validates message content
-    fn validate_content(content: &str) -> Result<()> {
+    fn validate_content(content: &str) -> ToolResult<()> {
         if content.trim().is_empty() {
             return Err(ToolError::InvalidArguments {
                 tool: "message".to_string(),
@@ -104,7 +104,7 @@ impl Tool for MessageTool {
         &self,
         args: HashMap<String, Value>,
         ctx: &ToolExecutionContext,
-    ) -> Result<String> {
+    ) -> ToolResult<String> {
         // Extract required parameters
         let chat_id = args
             .get("chat_id")

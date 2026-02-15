@@ -1,92 +1,22 @@
+//! Tool system for miniclaw
+//!
+//! This module provides the tool trait, registry, and implementations
+//! for tools that the agent can use to perform actions.
+
 pub mod message;
+pub mod types;
+
+// Re-export types from types module for backward compatibility
+pub use types::{Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolResult};
 
 use serde_json::Value;
 use std::collections::HashMap;
-use thiserror::Error;
-
-/// Error types for tool execution
-#[derive(Error, Debug, Clone, PartialEq)]
-pub enum ToolError {
-    #[error("Tool not found: {0}")]
-    NotFound(String),
-
-    #[error("Invalid arguments for tool '{tool}': {message}")]
-    InvalidArguments { tool: String, message: String },
-
-    #[error("Tool '{tool}' execution failed: {message}")]
-    ExecutionFailed { tool: String, message: String },
-
-    #[error("Tool '{tool}' execution failed: {message}")]
-    ExecutionFailedRecoverable { tool: String, message: String },
-
-    #[error("Permission denied for tool '{tool}': {message}")]
-    PermissionDenied { tool: String, message: String },
-
-    #[error("Tool '{tool}' timed out after {duration}s")]
-    Timeout { tool: String, duration: u64 },
-}
-
-impl ToolError {
-    /// Check if the error is recoverable (can be retried)
-    pub fn is_recoverable(&self) -> bool {
-        matches!(
-            self,
-            ToolError::Timeout { .. } | ToolError::ExecutionFailedRecoverable { .. }
-        )
-    }
-
-    /// Get the tool name from the error
-    pub fn tool_name(&self) -> &str {
-        match self {
-            ToolError::NotFound(name) => name,
-            ToolError::InvalidArguments { tool, .. } => tool,
-            ToolError::ExecutionFailed { tool, .. } => tool,
-            ToolError::ExecutionFailedRecoverable { tool, .. } => tool,
-            ToolError::PermissionDenied { tool, .. } => tool,
-            ToolError::Timeout { tool, .. } => tool,
-        }
-    }
-}
-
-/// Result type for tool operations
-pub type Result<T> = std::result::Result<T, ToolError>;
-
-#[derive(Debug, Clone, Default)]
-pub struct ToolExecutionContext {
-    /// Channel for the current conversation (e.g., "telegram")
-    pub channel: Option<String>,
-    /// Chat/user identifier for the current conversation
-    pub chat_id: Option<String>,
-}
-
-/// Trait for implementing tools that the agent can use
-#[async_trait::async_trait]
-pub trait Tool: Send + Sync {
-    /// Returns the unique name of the tool
-    fn name(&self) -> &str;
-
-    /// Returns a description of what the tool does
-    fn description(&self) -> &str;
-
-    /// Returns the JSON Schema for the tool's parameters
-    fn parameters(&self) -> Value;
-
-    /// Executes the tool with the given arguments
-    ///
-    /// # Arguments
-    /// * `args` - A HashMap of parameter names to their JSON values
-    ///
-    /// # Returns
-    /// * `Ok(String)` - The result of the tool execution as a string
-    /// * `Err(ToolError)` - If execution fails
-    async fn execute(
-        &self,
-        args: HashMap<String, Value>,
-        ctx: &ToolExecutionContext,
-    ) -> Result<String>;
-}
 
 /// Registry for managing available tools
+///
+/// The ToolRegistry stores and manages all tools available to the agent.
+/// It provides methods for registering, retrieving, and listing tools,
+/// as well as generating tool definitions for LLM function calling.
 pub struct ToolRegistry {
     tools: HashMap<String, Box<dyn Tool>>,
 }
@@ -99,6 +29,11 @@ impl ToolRegistry {
         }
     }
 
+    /// Creates a new registry with default tools pre-registered
+    ///
+    /// # Arguments
+    /// * `hub` - The ChatHub for sending messages
+    /// * `default_channel` - The default channel to use for message tool
     pub fn with_default_tools(
         hub: std::sync::Arc<crate::chat::ChatHub>,
         default_channel: impl Into<String>,
@@ -119,8 +54,8 @@ impl ToolRegistry {
     /// * `tool` - The tool to register
     ///
     /// # Errors
-    /// Returns an error if a tool with the same name is already registered
-    pub fn register(&mut self, tool: Box<dyn Tool>) -> Result<()> {
+    /// Returns `ToolError::ExecutionFailed` if a tool with the same name is already registered
+    pub fn register(&mut self, tool: Box<dyn Tool>) -> types::ToolResult<()> {
         let name = tool.name().to_string();
 
         if self.tools.contains_key(&name) {
@@ -134,12 +69,40 @@ impl ToolRegistry {
         Ok(())
     }
 
+    /// Unregisters a tool from the registry
+    ///
+    /// # Arguments
+    /// * `name` - The name of the tool to unregister
+    ///
+    /// # Returns
+    /// `true` if the tool was found and removed, `false` otherwise
+    pub fn unregister(&mut self, name: &str) -> bool {
+        self.tools.remove(name).is_some()
+    }
+
     /// Retrieves a tool by name
+    ///
+    /// # Arguments
+    /// * `name` - The name of the tool to retrieve
+    ///
+    /// # Returns
+    /// `Some(&dyn Tool)` if found, `None` otherwise
     pub fn get(&self, name: &str) -> Option<&dyn Tool> {
         self.tools.get(name).map(|t| t.as_ref())
     }
 
-    /// Lists all registered tools with their descriptions
+    /// Checks if a tool is registered
+    ///
+    /// # Arguments
+    /// * `name` - The name of the tool to check
+    pub fn contains(&self, name: &str) -> bool {
+        self.tools.contains_key(name)
+    }
+
+    /// Lists all registered tools with their names and descriptions
+    ///
+    /// # Returns
+    /// A vector of tuples containing (name, description) for each tool
     pub fn list_tools(&self) -> Vec<(&str, &str)> {
         self.tools
             .values()
@@ -158,6 +121,9 @@ impl ToolRegistry {
     }
 
     /// Returns all tool definitions formatted for LLM function calling
+    ///
+    /// Converts all registered tools to OpenAI-compatible function definitions
+    /// for use in LLM API calls.
     pub fn get_tool_definitions(&self) -> Vec<Value> {
         self.tools
             .values()
@@ -173,6 +139,39 @@ impl ToolRegistry {
             })
             .collect()
     }
+
+    /// Returns all tools as ToolDefinition structs
+    ///
+    /// Similar to `get_tool_definitions()` but returns strongly-typed
+    /// ToolDefinition structs instead of JSON values.
+    pub fn get_definitions(&self) -> Vec<ToolDefinition> {
+        self.tools
+            .values()
+            .map(|tool| tool.to_tool_definition())
+            .collect()
+    }
+
+    /// Executes a tool by name with the given arguments
+    ///
+    /// # Arguments
+    /// * `name` - The name of the tool to execute
+    /// * `args` - Arguments to pass to the tool
+    /// * `ctx` - Execution context
+    ///
+    /// # Returns
+    /// The tool's result as a string, or an error if execution fails
+    pub async fn execute_tool(
+        &self,
+        name: &str,
+        args: HashMap<String, Value>,
+        ctx: &ToolExecutionContext,
+    ) -> types::ToolResult<String> {
+        let tool = self
+            .get(name)
+            .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
+
+        tool.execute(args, ctx).await
+    }
 }
 
 impl Default for ToolRegistry {
@@ -185,6 +184,7 @@ impl Default for ToolRegistry {
 mod tests {
     use super::*;
     use serde_json::json;
+    use types::{Tool, ToolExecutionContext};
 
     struct TestTool;
 
@@ -212,7 +212,7 @@ mod tests {
             &self,
             args: HashMap<String, Value>,
             _ctx: &ToolExecutionContext,
-        ) -> Result<String> {
+        ) -> types::ToolResult<String> {
             let input = args.get("input").and_then(|v| v.as_str()).ok_or_else(|| {
                 ToolError::InvalidArguments {
                     tool: "test_tool".to_string(),
@@ -251,6 +251,12 @@ mod tests {
         let result = registry.register(Box::new(tool2));
 
         assert!(result.is_err());
+        match result.unwrap_err() {
+            ToolError::ExecutionFailed { tool, .. } => {
+                assert_eq!(tool, "test_tool");
+            }
+            _ => panic!("Expected ExecutionFailed error"),
+        }
     }
 
     #[test]
@@ -266,6 +272,35 @@ mod tests {
 
         let not_found = registry.get("nonexistent");
         assert!(not_found.is_none());
+    }
+
+    #[test]
+    fn test_contains() {
+        let mut registry = ToolRegistry::new();
+        let tool = TestTool;
+
+        assert!(!registry.contains("test_tool"));
+
+        registry.register(Box::new(tool)).unwrap();
+
+        assert!(registry.contains("test_tool"));
+        assert!(!registry.contains("nonexistent"));
+    }
+
+    #[test]
+    fn test_unregister() {
+        let mut registry = ToolRegistry::new();
+        let tool = TestTool;
+
+        registry.register(Box::new(tool)).unwrap();
+        assert_eq!(registry.len(), 1);
+
+        let removed = registry.unregister("test_tool");
+        assert!(removed);
+        assert_eq!(registry.len(), 0);
+
+        let not_found = registry.unregister("nonexistent");
+        assert!(!not_found);
     }
 
     #[test]
@@ -310,6 +345,40 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn test_execute_tool_via_registry() {
+        let mut registry = ToolRegistry::new();
+        let tool = TestTool;
+
+        registry.register(Box::new(tool)).unwrap();
+
+        let mut args = HashMap::new();
+        args.insert("input".to_string(), json!("world"));
+
+        let ctx = ToolExecutionContext::default();
+        let result = registry.execute_tool("test_tool", args, &ctx).await;
+
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), "Processed: world");
+    }
+
+    #[tokio::test]
+    async fn test_execute_tool_not_found() {
+        let registry = ToolRegistry::new();
+
+        let args = HashMap::new();
+        let ctx = ToolExecutionContext::default();
+        let result = registry.execute_tool("nonexistent", args, &ctx).await;
+
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ToolError::NotFound(tool) => {
+                assert_eq!(tool, "nonexistent");
+            }
+            _ => panic!("Expected NotFound error"),
+        }
+    }
+
     #[test]
     fn test_get_tool_definitions() {
         let mut registry = ToolRegistry::new();
@@ -327,38 +396,65 @@ mod tests {
     }
 
     #[test]
-    fn test_tool_error_recoverable() {
-        let timeout_error = ToolError::Timeout {
-            tool: "test".to_string(),
-            duration: 30,
-        };
-        assert!(timeout_error.is_recoverable());
+    fn test_get_definitions() {
+        let mut registry = ToolRegistry::new();
+        let tool = TestTool;
 
-        let recoverable = ToolError::ExecutionFailedRecoverable {
-            tool: "test".to_string(),
-            message: "buffer full".to_string(),
-        };
-        assert!(recoverable.is_recoverable());
+        registry.register(Box::new(tool)).unwrap();
 
-        let not_found_error = ToolError::NotFound("test".to_string());
-        assert!(!not_found_error.is_recoverable());
+        let definitions = registry.get_definitions();
+        assert_eq!(definitions.len(), 1);
 
-        let exec_error = ToolError::ExecutionFailed {
-            tool: "test".to_string(),
-            message: "failed".to_string(),
-        };
-        assert!(!exec_error.is_recoverable());
+        let def = &definitions[0];
+        assert_eq!(def.name(), "test_tool");
+        assert_eq!(def.description(), "A test tool");
+        assert_eq!(def.r#type, "function");
     }
 
     #[test]
-    fn test_tool_error_tool_name() {
-        let error = ToolError::NotFound("my_tool".to_string());
-        assert_eq!(error.tool_name(), "my_tool");
+    fn test_default() {
+        let registry: ToolRegistry = Default::default();
+        assert!(registry.is_empty());
+    }
 
-        let error = ToolError::InvalidArguments {
-            tool: "other_tool".to_string(),
-            message: "bad args".to_string(),
-        };
-        assert_eq!(error.tool_name(), "other_tool");
+    #[test]
+    fn test_multiple_tools() {
+        struct AnotherTool;
+
+        #[async_trait::async_trait]
+        impl Tool for AnotherTool {
+            fn name(&self) -> &str {
+                "another_tool"
+            }
+
+            fn description(&self) -> &str {
+                "Another test tool"
+            }
+
+            fn parameters(&self) -> Value {
+                json!({"type": "object"})
+            }
+
+            async fn execute(
+                &self,
+                _args: HashMap<String, Value>,
+                _ctx: &ToolExecutionContext,
+            ) -> types::ToolResult<String> {
+                Ok("another result".to_string())
+            }
+        }
+
+        let mut registry = ToolRegistry::new();
+        registry.register(Box::new(TestTool)).unwrap();
+        registry.register(Box::new(AnotherTool)).unwrap();
+
+        assert_eq!(registry.len(), 2);
+
+        let tools = registry.list_tools();
+        assert_eq!(tools.len(), 2);
+
+        let names: Vec<&str> = tools.iter().map(|(n, _)| *n).collect();
+        assert!(names.contains(&"test_tool"));
+        assert!(names.contains(&"another_tool"));
     }
 }
