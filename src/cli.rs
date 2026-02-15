@@ -1,7 +1,7 @@
+use anyhow::Context;
 use clap::{CommandFactory, Parser, Subcommand};
-use std::process;
 
-use crate::config::{load_config, Config};
+use crate::config::{load_config, run_onboarding, Config};
 
 #[derive(Parser)]
 #[command(name = "miniclaw")]
@@ -75,39 +75,34 @@ pub enum Commands {
     },
 }
 
-pub fn run(cli: Cli) {
+pub fn run(cli: Cli) -> anyhow::Result<()> {
     tracing::debug!("CLI parsing complete, processing command");
 
-    let config = match load_config(cli.model.clone(), cli.config.clone()) {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            eprintln!("Error loading configuration: {}", e);
-            process::exit(1);
-        }
-    };
+    let config = load_config(cli.model.clone(), cli.config.clone())
+        .context("Error loading configuration")?;
 
     match cli.command {
         Some(Commands::Version) => {
             tracing::debug!("Executing version command");
             print_version(&config);
-            process::exit(0);
+            Ok(())
         }
         Some(Commands::Onboard { yes, path }) => {
             tracing::debug!("Executing onboard command");
-            handle_onboard(yes, path, &config);
-            process::exit(0);
+            handle_onboard(yes, path, &config)?;
+            Ok(())
         }
         Some(Commands::Help { command }) => {
             tracing::debug!("Executing help command");
-            handle_help(command);
-            process::exit(0);
+            handle_help(command)?;
+            Ok(())
         }
         None => {
             tracing::debug!("No subcommand provided, showing help");
             let mut cmd = Cli::command();
             cmd.print_help().unwrap();
             println!();
-            process::exit(0);
+            Ok(())
         }
     }
 }
@@ -120,19 +115,17 @@ fn print_version(config: &Config) {
     }
 }
 
-fn handle_onboard(yes: bool, path: Option<String>, config: &Config) {
-    tracing::info!(yes = yes, path = ?path, "Onboard command placeholder");
-    println!("Onboard command - to be implemented");
-    println!("Skip prompts: {}", yes);
-    if let Some(p) = path {
-        println!("Custom path: {}", p);
-    }
-    if let Some(model) = &config.model {
-        println!("Configured model: {}", model);
-    }
+fn handle_onboard(yes: bool, path: Option<String>, config: &Config) -> anyhow::Result<()> {
+    tracing::info!(yes = yes, path = ?path, "Starting onboard command");
+
+    run_onboarding(
+        config.model.is_some() || std::env::var("RUST_LOG").is_ok(),
+        path,
+        yes,
+    )
 }
 
-pub fn handle_help(command: Option<String>) {
+pub fn handle_help(command: Option<String>) -> anyhow::Result<()> {
     let mut cmd = Cli::command();
     match command {
         Some(cmd_name) => {
@@ -141,15 +134,16 @@ pub fn handle_help(command: Option<String>) {
                     .arg(&cmd_name)
                     .arg("--help")
                     .status()
-                    .ok();
+                    .context("Failed to execute help command")?;
+                Ok(())
             } else {
-                println!("Unknown command: {}", cmd_name);
-                std::process::exit(1);
+                anyhow::bail!("Unknown command: {}", cmd_name);
             }
         }
         None => {
             cmd.print_help().unwrap();
             println!();
+            Ok(())
         }
     }
 }

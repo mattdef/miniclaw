@@ -1,5 +1,7 @@
 mod cli;
 mod config;
+mod skills;
+mod workspace;
 
 use clap::Parser;
 use tracing::Level;
@@ -26,7 +28,10 @@ fn main() {
         Ok(cli) => {
             // Check for help subcommand before initializing logging
             if let Some(cli::Commands::Help { command }) = &cli.command {
-                cli::handle_help(command.clone());
+                if let Err(e) = cli::handle_help(command.clone()) {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
                 std::process::exit(0);
             }
 
@@ -36,7 +41,10 @@ fn main() {
             tracing::debug!("Verbose mode enabled");
             tracing::info!("Starting miniclaw v{}", env!("CARGO_PKG_VERSION"));
 
-            cli::run(cli);
+            if let Err(e) = cli::run(cli) {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
         }
         Err(e) => {
             use clap::error::ErrorKind;
