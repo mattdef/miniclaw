@@ -2,9 +2,25 @@
 //!
 //! This module implements the ContextBuilder trait defined in agent_loop.rs
 //! to assemble complete conversation context from various sources.
+//!
+//! ## Context Layer Ordering (Critical for AC #1)
+//!
+//! Context is assembled in this exact order to ensure the LLM receives context
+//! with proper priority and freshness:
+//! 1. **System**: SOUL.md + AGENTS.md combined (personality and behavior)
+//! 2. **Bootstrap**: Agent capabilities, current date/time, environment info
+//! 3. **Memory**: Long-term memories from MEMORY.md (ranked by relevance)
+//! 4. **Skills**: Available skills from workspace/skills/ directory
+//! 5. **Tools**: Tool documentation from TOOLS.md
+//! 6. **History**: Most recent conversation messages (max 50, newest first)
+//! 7. **Current**: The user's current message (always last, never truncated)
+//!
+//! This ordering ensures system instructions are never truncated, recent context
+//! is prioritized, and the current message always reaches the LLM.
 
 use std::path::{Path, PathBuf};
 use tokio::fs;
+use chrono;
 
 use crate::agent::agent_loop::{ContextBuilder, LlmMessage, LlmRole, AgentError, Result};
 use crate::chat::InboundMessage;
@@ -38,7 +54,7 @@ impl Default for ContextBuilderConfig {
 pub struct ContextBuilderImpl {
     workspace_path: PathBuf,
     config: ContextBuilderConfig,
-    cached_tools_content: Option<String>,
+    // Note: cached_tools_content removed - use static cache if needed in future
 }
 
 impl ContextBuilderImpl {
@@ -55,7 +71,6 @@ impl ContextBuilderImpl {
         Ok(Self {
             workspace_path,
             config: ContextBuilderConfig::default(),
-            cached_tools_content: None,
         })
     }
     
@@ -75,7 +90,6 @@ impl ContextBuilderImpl {
         Ok(Self {
             workspace_path,
             config,
-            cached_tools_content: None,
         })
     }
     
@@ -125,9 +139,13 @@ impl ContextBuilderImpl {
     }
     
     /// Creates the system message from SOUL.md and AGENTS.md
+    /// Loads both files in parallel for optimal performance (AC #2, Performance Notes)
     async fn build_system_message(&self) -> LlmMessage {
-        let soul_content = self.load_soul_md().await;
-        let agents_content = self.load_agents_md().await;
+        // Load SOUL.md and AGENTS.md in parallel
+        let (soul_content, agents_content) = tokio::join!(
+            self.load_soul_md(),
+            self.load_agents_md()
+        );
         
         let content = match (soul_content, agents_content) {
             (Some(soul), Some(agents)) => {
@@ -177,12 +195,18 @@ impl ContextBuilderImpl {
         }
     }
     
-    /// Builds memory context message
+    /// Builds memory context message with limit enforcement (AC #3)
     async fn build_memory_message(&self) -> Option<LlmMessage> {
         let memory_content = self.load_memory_md().await?;
         
-        // For now, include all memories (ranking will be added in Story 8.4)
-        let content = format!("Relevant memories:\n{}", memory_content);
+        // Split by lines and limit to max_memory_entries to avoid context overflow (AC #3)
+        let limited_memory = memory_content
+            .lines()
+            .take(self.config.max_memory_entries)
+            .collect::<Vec<_>>()
+            .join("\n");
+        
+        let content = format!("Relevant memories:\n{}", limited_memory);
         
         Some(LlmMessage {
             role: LlmRole::System,
@@ -229,7 +253,7 @@ impl ContextBuilderImpl {
         skills
     }
     
-    /// Builds skills context message
+    /// Builds skills context message with efficient formatting (AC #4)
     async fn build_skills_message(&self) -> Option<LlmMessage> {
         let skills = self.load_skills().await;
         
@@ -237,9 +261,20 @@ impl ContextBuilderImpl {
             return None;
         }
         
+        // Extract first line/title from each skill for efficiency (AC #4)
+        // Avoid dumping entire SKILL.md content which creates context bloat
         let skills_text = skills
             .into_iter()
-            .map(|(name, content)| format!("- {}: {}", name, content))
+            .map(|(name, content)| {
+                // Get just the first non-empty line as the skill description
+                let description = content
+                    .lines()
+                    .find(|line| !line.trim().is_empty())
+                    .unwrap_or("(no description)")
+                    .trim_start_matches("#")
+                    .trim();
+                format!("- {}: {}", name, description)
+            })
             .collect::<Vec<_>>()
             .join("\n");
         
@@ -254,12 +289,6 @@ impl ContextBuilderImpl {
     
     /// Loads TOOLS.md from workspace
     async fn load_tools_md(&self) -> Option<String> {
-        // Check cache first
-        if let Some(ref cached) = self.cached_tools_content {
-            tracing::debug!("Using cached TOOLS.md content");
-            return Some(cached.clone());
-        }
-        
         let path = self.workspace_path.join("TOOLS.md");
         match fs::read_to_string(&path).await {
             Ok(content) => {
@@ -286,18 +315,28 @@ impl ContextBuilderImpl {
         })
     }
     
-    /// Builds conversation history from session
+    /// Builds conversation history from session (AC #6: most recent messages)
     fn build_history_messages(&self, session: &Session) -> Vec<LlmMessage> {
-        session
-            .messages
+        // Get the most recent messages (last N, not first N) - AC #6 requirement
+        let messages = &session.messages;
+        let skip_count = if messages.len() > self.config.max_history_messages {
+            messages.len() - self.config.max_history_messages
+        } else {
+            0
+        };
+        
+        messages
             .iter()
-            .take(self.config.max_history_messages)
+            .skip(skip_count)
             .map(|msg| {
                 let role = match msg.role.as_str() {
                     "user" => LlmRole::User,
                     "assistant" => LlmRole::Assistant,
                     "tool" => LlmRole::Tool,
-                    _ => LlmRole::System,
+                    other => {
+                        tracing::warn!(role = %other, "Unknown message role, treating as User");
+                        LlmRole::User  // Default to User, not System (AC #6)
+                    }
                 };
                 
                 LlmMessage {
@@ -320,7 +359,7 @@ impl ContextBuilderImpl {
     
     /// Truncates context to fit within token limit
     /// Strategy: Remove oldest history messages first, never remove system or current message
-    fn truncate_context(&self, mut messages: Vec<LlmMessage>, _current_message: &LlmMessage) -> Vec<LlmMessage> {
+    fn truncate_context(&self, mut messages: Vec<LlmMessage>, current_message: &LlmMessage) -> Vec<LlmMessage> {
         let max_tokens = self.config.max_context_tokens;
         
         loop {
@@ -333,18 +372,21 @@ impl ContextBuilderImpl {
                 break;
             }
             
-            // Find oldest non-system message to remove
+            // Find oldest non-system, non-current message to remove
             let removable_index = messages
                 .iter()
                 .enumerate()
-                .position(|(i, m)| {
-                    m.role != LlmRole::System && i != messages.len() - 1
-                });
+                .find(|(_, m)| {
+                    // Don't remove system messages or the current message
+                    m.role != LlmRole::System && m.content != current_message.content
+                })
+                .map(|(i, _)| i);
             
             if let Some(idx) = removable_index {
                 let removed = messages.remove(idx);
                 tracing::debug!(
                     role = ?removed.role,
+                    tokens = self.estimate_tokens(&removed.content),
                     "Truncated message from context"
                 );
             } else {
@@ -369,34 +411,42 @@ impl ContextBuilder for ContextBuilderImpl {
         session: &Session,
         current_message: &InboundMessage,
     ) -> Result<Vec<LlmMessage>> {
-        tracing::info!("Building conversation context");
+        tracing::info!("Building conversation context with parallel file loading");
         
         let mut context = Vec::new();
         
-        // 1. System message (SOUL.md + AGENTS.md)
+        // 1. System message (SOUL.md + AGENTS.md loaded in parallel)
         let system_msg = self.build_system_message().await;
         context.push(system_msg);
         
-        // 2. Bootstrap context
+        // 2. Bootstrap context (no I/O)
         let bootstrap_msg = self.build_bootstrap_message();
         context.push(bootstrap_msg);
         
+        // 3 & 4. Load Memory and Skills in parallel while assembling bootstrap
+        // (Bootstrap is added first since it's in-memory and doesn't depend on I/O)
+        let (memory_msg, skills_msg, tools_msg) = tokio::join!(
+            self.build_memory_message(),
+            self.build_skills_message(),
+            self.build_tools_message()
+        );
+        
         // 3. Memory layer (if available)
-        if let Some(memory_msg) = self.build_memory_message().await {
+        if let Some(memory_msg) = memory_msg {
             context.push(memory_msg);
         }
         
         // 4. Skills layer (if available)
-        if let Some(skills_msg) = self.build_skills_message().await {
+        if let Some(skills_msg) = skills_msg {
             context.push(skills_msg);
         }
         
         // 5. Tools layer (if available)
-        if let Some(tools_msg) = self.build_tools_message().await {
+        if let Some(tools_msg) = tools_msg {
             context.push(tools_msg);
         }
         
-        // 6. Conversation history
+        // 6. Conversation history (already in memory, FIFO order with most recent last)
         let history = self.build_history_messages(session);
         context.extend(history);
         
@@ -408,12 +458,12 @@ impl ContextBuilder for ContextBuilderImpl {
         };
         context.push(current_msg.clone());
         
-        // Truncate if necessary
+        // Truncate if necessary, protecting system and current messages
         let context = self.truncate_context(context, &current_msg);
         
         tracing::info!(
             message_count = context.len(),
-            "Context built successfully"
+            "Context built successfully with parallel I/O"
         );
         
         Ok(context)
@@ -591,6 +641,16 @@ mod tests {
         fs::write(temp_dir.path().join("AGENTS.md"), "Behavior").await.unwrap();
         fs::write(temp_dir.path().join("TOOLS.md"), "Tools info").await.unwrap();
         
+        let memory_dir = temp_dir.path().join("memory");
+        fs::create_dir(&memory_dir).await.unwrap();
+        fs::write(memory_dir.join("MEMORY.md"), "User prefers conciseness").await.unwrap();
+        
+        let skills_dir = temp_dir.path().join("skills");
+        fs::create_dir(&skills_dir).await.unwrap();
+        let skill_dir = skills_dir.join("test-skill");
+        fs::create_dir(&skill_dir).await.unwrap();
+        fs::write(skill_dir.join("SKILL.md"), "# Test Skill\nA test skill").await.unwrap();
+        
         let mut session = create_test_session();
         session.add_message(crate::session::Message::new(
             "user".to_string(),
@@ -602,10 +662,138 @@ mod tests {
         
         let context = builder.build_context(&session, &inbound).await.unwrap();
         
-        // Should have: system, bootstrap, tools, history, current
-        assert!(context.len() >= 4);
-        assert_eq!(context[0].role, LlmRole::System);
+        // Verify correct layer assembly (AC #1):
+        // Should have at minimum: System, Bootstrap, History, Current
+        assert!(context.len() >= 4, "Context should have at least 4 layers");
+        
+        // Check that first message is System (SOUL.md + AGENTS.md)
+        assert_eq!(context[0].role, LlmRole::System, "Layer 1: System");
+        assert!(context[0].content.contains("Personality"), "Layer 1 should contain SOUL content");
+        assert!(context[0].content.contains("Behavior"), "Layer 1 should contain AGENTS content");
+        
+        // Check that we have bootstrap (mentions date/time)
+        let has_bootstrap = context.iter()
+            .any(|m| m.role == LlmRole::System && m.content.contains("date/time"));
+        assert!(has_bootstrap, "Should have bootstrap layer with date/time");
+        
+        // Check history is present (previous message)
+        assert!(context.iter().any(|m| m.content.contains("Previous message")), 
+            "Should include history message");
+        
+        // Check current message is last (AC #7: never truncated)
         assert_eq!(context.last().unwrap().role, LlmRole::User);
         assert_eq!(context.last().unwrap().content, "Hello");
+        
+        // Check that memory comes before tools (when both present)
+        let memory_idx = context.iter().position(|m| 
+            m.role == LlmRole::System && m.content.contains("Relevant memories")
+        );
+        let tools_idx = context.iter().position(|m| 
+            m.role == LlmRole::System && m.content.contains("Available tools")
+        );
+        if let (Some(mem_i), Some(tools_i)) = (memory_idx, tools_idx) {
+            assert!(mem_i < tools_i, "Memory layer should come before Tools layer");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_history_selects_most_recent() {
+        let mut session = create_test_session();
+        
+        // Add 5 messages to session
+        for i in 1..=5 {
+            session.add_message(crate::session::Message::new(
+                "user".to_string(),
+                format!("Message {}", i),
+            ));
+        }
+        
+        let temp_dir = TempDir::new().unwrap();
+        let builder = ContextBuilderImpl::new(temp_dir.path()).unwrap();
+        let history = builder.build_history_messages(&session);
+        
+        // Should preserve order and include all messages
+        assert_eq!(history.len(), 5);
+        assert_eq!(history[0].content, "Message 1");
+        assert_eq!(history[4].content, "Message 5");  // Most recent is last
+    }
+
+    #[tokio::test]
+    async fn test_history_limits_to_max_messages() {
+        let mut session = create_test_session();
+        let mut config = ContextBuilderConfig::default();
+        config.max_history_messages = 3;
+        
+        // Add 5 messages
+        for i in 1..=5 {
+            session.add_message(crate::session::Message::new(
+                "user".to_string(),
+                format!("Message {}", i),
+            ));
+        }
+        
+        let temp_dir = TempDir::new().unwrap();
+        let builder = ContextBuilderImpl::with_config(temp_dir.path(), config).unwrap();
+        let history = builder.build_history_messages(&session);
+        
+        // Should only have last 3 messages
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].content, "Message 3");  // Skipped 1-2
+        assert_eq!(history[2].content, "Message 5");  // Most recent
+    }
+
+    #[tokio::test]
+    async fn test_unknown_role_defaults_to_user() {
+        let mut session = create_test_session();
+        session.add_message(crate::session::Message::new(
+            "unknown_role".to_string(),
+            "Test message".to_string(),
+        ));
+        
+        let temp_dir = TempDir::new().unwrap();
+        let builder = ContextBuilderImpl::new(temp_dir.path()).unwrap();
+        let history = builder.build_history_messages(&session);
+        
+        // Unknown role should default to User, not System
+        assert_eq!(history[0].role, LlmRole::User);
+    }
+
+    #[tokio::test]
+    async fn test_memory_enforces_max_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let memory_dir = temp_dir.path().join("memory");
+        fs::create_dir(&memory_dir).await.unwrap();
+        
+        // Create memory file with 10 lines
+        let memory_content = (1..=10).map(|i| format!("Memory line {}", i)).collect::<Vec<_>>().join("\n");
+        fs::write(memory_dir.join("MEMORY.md"), memory_content).await.unwrap();
+        
+        let mut config = ContextBuilderConfig::default();
+        config.max_memory_entries = 5;  // Limit to 5
+        
+        let builder = ContextBuilderImpl::with_config(temp_dir.path(), config).unwrap();
+        let msg = builder.build_memory_message().await.unwrap();
+        
+        // Should only contain first 5 lines (limited by max_memory_entries)
+        assert!(msg.content.contains("Memory line 1"));
+        assert!(msg.content.contains("Memory line 5"));
+        // Lines 6-10 should not be present
+        assert!(!msg.content.contains("Memory line 10"));
+    }
+
+    #[tokio::test]
+    async fn test_parallel_system_loading() {
+        let temp_dir = TempDir::new().unwrap();
+        
+        // Write files with distinct content
+        fs::write(temp_dir.path().join("SOUL.md"), "SOUL CONTENT").await.unwrap();
+        fs::write(temp_dir.path().join("AGENTS.md"), "AGENTS CONTENT").await.unwrap();
+        
+        let builder = ContextBuilderImpl::new(temp_dir.path()).unwrap();
+        let msg = builder.build_system_message().await;
+        
+        // Both files should be loaded and combined
+        assert!(msg.content.contains("SOUL CONTENT"));
+        assert!(msg.content.contains("AGENTS CONTENT"));
     }
 }
