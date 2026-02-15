@@ -78,8 +78,14 @@ pub async fn execute_one_shot(
         Arc::new(MinimalContextBuilder::new())
     };
 
-    // Create a tool registry
+    // Create a tool registry with default tools
     let tool_registry = Arc::new(ToolRegistry::new());
+    
+    // Register filesystem tool with workspace directory
+    let fs_tool = crate::agent::tools::filesystem::FilesystemTool::new(workspace_path.clone());
+    tool_registry
+        .register(Box::new(fs_tool))
+        .expect("Failed to register filesystem tool");
 
     // Create a temporary session manager (not persisted)
     let temp_dir = std::env::temp_dir();
