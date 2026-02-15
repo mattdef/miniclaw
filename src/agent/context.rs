@@ -22,7 +22,8 @@ use std::path::{Path, PathBuf};
 use tokio::fs;
 use chrono;
 
-use crate::agent::agent_loop::{ContextBuilder, LlmMessage, LlmRole, AgentError, Result};
+use crate::agent::agent_loop::{ContextBuilder, AgentError, Result};
+use crate::providers::{LlmMessage, LlmRole, LlmToolCall};
 use crate::chat::InboundMessage;
 use crate::session::Session;
 
@@ -345,7 +346,7 @@ impl ContextBuilderImpl {
                     tool_calls: msg.tool_calls.as_ref().map(|calls| {
                         calls
                             .iter()
-                            .map(|call| crate::agent::agent_loop::LlmToolCall {
+                            .map(|call| LlmToolCall {
                                 id: call.id.clone(),
                                 name: call.name.clone(),
                                 arguments: call.arguments.clone(),

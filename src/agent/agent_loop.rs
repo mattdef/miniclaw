@@ -3,6 +3,7 @@ use tokio::sync::RwLock;
 
 use crate::agent::tools::ToolRegistry;
 use crate::chat::{ChatHub, InboundMessage};
+use crate::providers::{LlmMessage, LlmProvider, LlmResponse, LlmRole, LlmToolCall};
 use crate::session::{Session, SessionManager};
 
 /// Maximum number of iterations before terminating to prevent infinite loops
@@ -38,66 +39,6 @@ pub enum AgentError {
 
 /// Result type for agent operations
 pub type Result<T> = std::result::Result<T, AgentError>;
-
-/// Represents a message in the conversation for LLM context
-#[derive(Debug, Clone)]
-pub struct LlmMessage {
-    pub role: LlmRole,
-    pub content: String,
-    pub tool_calls: Option<Vec<LlmToolCall>>,
-}
-
-/// Role of a message sender
-#[derive(Debug, Clone, PartialEq)]
-pub enum LlmRole {
-    System,
-    User,
-    Assistant,
-    Tool,
-}
-
-impl LlmRole {
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            LlmRole::System => "system",
-            LlmRole::User => "user",
-            LlmRole::Assistant => "assistant",
-            LlmRole::Tool => "tool",
-        }
-    }
-}
-
-/// Represents a tool call requested by the LLM
-#[derive(Debug, Clone)]
-pub struct LlmToolCall {
-    pub id: String,
-    pub name: String,
-    pub arguments: String,
-}
-
-/// Response from the LLM provider
-#[derive(Debug, Clone)]
-pub struct LlmResponse {
-    pub content: String,
-    pub tool_calls: Option<Vec<LlmToolCall>>,
-    pub prompt_tokens: Option<u32>,
-    pub completion_tokens: Option<u32>,
-}
-
-/// Trait for LLM providers (OpenAI-compatible, Ollama, etc.)
-#[async_trait::async_trait]
-pub trait LlmProvider: Send + Sync {
-    /// Send a chat request to the LLM with conversation history and available tools
-    async fn chat(
-        &self,
-        messages: Vec<LlmMessage>,
-        tools: Vec<serde_json::Value>,
-        model: &str,
-    ) -> Result<LlmResponse>;
-    
-    /// Returns the default model for this provider
-    fn default_model(&self) -> String;
-}
 
 /// Trait for building context from various sources
 #[async_trait::async_trait]
@@ -536,6 +477,7 @@ impl AgentLoop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::ProviderError;
     
     // Mock implementations for testing
     struct MockLlmProvider;
@@ -547,7 +489,7 @@ mod tests {
             _messages: Vec<LlmMessage>,
             _tools: Vec<serde_json::Value>,
             _model: &str,
-        ) -> Result<LlmResponse> {
+        ) -> std::result::Result<LlmResponse, ProviderError> {
             Ok(LlmResponse {
                 content: "Test response".to_string(),
                 tool_calls: None,
@@ -558,6 +500,10 @@ mod tests {
         
         fn default_model(&self) -> String {
             "test-model".to_string()
+        }
+        
+        fn provider_name(&self) -> &'static str {
+            "MockLlmProvider"
         }
     }
     
