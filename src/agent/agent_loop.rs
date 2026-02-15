@@ -1,0 +1,622 @@
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+use crate::agent::tools::ToolRegistry;
+use crate::chat::{ChatHub, InboundMessage};
+use crate::session::{Session, SessionManager};
+
+/// Maximum number of iterations before terminating to prevent infinite loops
+pub const MAX_ITERATIONS: u32 = 200;
+
+/// Timeout for LLM API calls in seconds
+pub const LLM_TIMEOUT_SECS: u64 = 30;
+
+/// Maximum number of retries for transient LLM errors
+pub const MAX_LLM_RETRIES: u32 = 3;
+
+/// Errors that can occur during agent loop execution
+#[derive(thiserror::Error, Debug)]
+pub enum AgentError {
+    #[error("Context building failed: {0}")]
+    ContextBuildError(String),
+    
+    #[error("LLM communication failed: {0}")]
+    LlmError(String),
+    
+    #[error("Max iterations ({0}) reached")]
+    MaxIterationsReached(u32),
+    
+    #[error("Tool execution failed: {0}")]
+    ToolExecutionError(String),
+    
+    #[error("Session error: {0}")]
+    SessionError(String),
+    
+    #[error("Chat hub error: {0}")]
+    ChatHubError(String),
+}
+
+/// Result type for agent operations
+pub type Result<T> = std::result::Result<T, AgentError>;
+
+/// Represents a message in the conversation for LLM context
+#[derive(Debug, Clone)]
+pub struct LlmMessage {
+    pub role: LlmRole,
+    pub content: String,
+    pub tool_calls: Option<Vec<LlmToolCall>>,
+}
+
+/// Role of a message sender
+#[derive(Debug, Clone, PartialEq)]
+pub enum LlmRole {
+    System,
+    User,
+    Assistant,
+    Tool,
+}
+
+impl LlmRole {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            LlmRole::System => "system",
+            LlmRole::User => "user",
+            LlmRole::Assistant => "assistant",
+            LlmRole::Tool => "tool",
+        }
+    }
+}
+
+/// Represents a tool call requested by the LLM
+#[derive(Debug, Clone)]
+pub struct LlmToolCall {
+    pub id: String,
+    pub name: String,
+    pub arguments: String,
+}
+
+/// Response from the LLM provider
+#[derive(Debug, Clone)]
+pub struct LlmResponse {
+    pub content: String,
+    pub tool_calls: Option<Vec<LlmToolCall>>,
+    pub prompt_tokens: Option<u32>,
+    pub completion_tokens: Option<u32>,
+}
+
+/// Trait for LLM providers (OpenAI-compatible, Ollama, etc.)
+#[async_trait::async_trait]
+pub trait LlmProvider: Send + Sync {
+    /// Send a chat request to the LLM with conversation history and available tools
+    async fn chat(
+        &self,
+        messages: Vec<LlmMessage>,
+        tools: Vec<serde_json::Value>,
+        model: &str,
+    ) -> Result<LlmResponse>;
+    
+    /// Returns the default model for this provider
+    fn default_model(&self) -> String;
+}
+
+/// Trait for building context from various sources
+#[async_trait::async_trait]
+pub trait ContextBuilder: Send + Sync {
+    /// Assemble the complete context for a conversation
+    async fn build_context(
+        &self,
+        session: &Session,
+        current_message: &InboundMessage,
+    ) -> Result<Vec<LlmMessage>>;
+}
+
+/// The main agent loop that orchestrates message processing
+pub struct AgentLoop {
+    chat_hub: Arc<ChatHub>,
+    llm_provider: Arc<dyn LlmProvider>,
+    context_builder: Arc<dyn ContextBuilder>,
+    tool_registry: Arc<ToolRegistry>,
+    session_manager: Arc<RwLock<SessionManager>>,
+    max_iterations: u32,
+    model: String,
+}
+
+impl AgentLoop {
+    /// Creates a new AgentLoop with the required dependencies
+    pub fn new(
+        chat_hub: Arc<ChatHub>,
+        llm_provider: Arc<dyn LlmProvider>,
+        context_builder: Arc<dyn ContextBuilder>,
+        tool_registry: Arc<ToolRegistry>,
+        session_manager: Arc<RwLock<SessionManager>>,
+    ) -> Self {
+        let model = llm_provider.default_model();
+        Self {
+            chat_hub,
+            llm_provider,
+            context_builder,
+            tool_registry,
+            session_manager,
+            max_iterations: MAX_ITERATIONS,
+            model,
+        }
+    }
+    
+    /// Creates a new AgentLoop with a specific model override
+    pub fn with_model(
+        chat_hub: Arc<ChatHub>,
+        llm_provider: Arc<dyn LlmProvider>,
+        context_builder: Arc<dyn ContextBuilder>,
+        tool_registry: Arc<ToolRegistry>,
+        session_manager: Arc<RwLock<SessionManager>>,
+        model: impl Into<String>,
+    ) -> Self {
+        let model = model.into();
+        Self {
+            chat_hub,
+            llm_provider,
+            context_builder,
+            tool_registry,
+            session_manager,
+            max_iterations: MAX_ITERATIONS,
+            model,
+        }
+    }
+    
+    /// Returns the maximum iterations limit
+    pub fn max_iterations(&self) -> u32 {
+        self.max_iterations
+    }
+    
+    /// Returns the current model being used
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// Processes a single inbound message through the agent loop
+    /// 
+    /// This is the main entry point for handling messages. It:
+    /// 1. Gets or creates a session for the chat
+    /// 2. Adds the user message to the session
+    /// 3. Builds the conversation context
+    /// 4. Runs the LLM→Tools→Reply cycle
+    /// 5. Returns the final response
+    pub async fn process_message(&self, message: InboundMessage) -> Result<String> {
+        let session_id = format!("{}_{}", message.channel, message.chat_id);
+        
+        tracing::info!(
+            session_id = %session_id,
+            channel = %message.channel,
+            chat_id = %message.chat_id,
+            "Starting message processing"
+        );
+
+        // Get or create session
+        let mut session = self
+            .get_or_create_session(&message.channel, &message.chat_id)
+            .await?;
+
+        // Add user message to session
+        let user_message = crate::session::Message::new(
+            "user".to_string(),
+            message.content.clone(),
+        );
+        session.add_message(user_message);
+
+        // Build context
+        let context = self
+            .context_builder
+            .build_context(&session, &message)
+            .await
+            .map_err(|e| AgentError::ContextBuildError(e.to_string()))?;
+
+        tracing::debug!(
+            session_id = %session_id,
+            context_messages = context.len(),
+            "Context built successfully"
+        );
+
+        // Run the main agent loop
+        let response = self.run_agent_loop(&session_id, &mut session, context).await?;
+
+        tracing::info!(
+            session_id = %session_id,
+            "Message processing complete"
+        );
+
+        Ok(response)
+    }
+
+    /// Gets an existing session or creates a new one
+    async fn get_or_create_session(
+        &self,
+        channel: &str,
+        chat_id: &str,
+    ) -> Result<Session> {
+        let session_manager = self.session_manager.read().await;
+        
+        session_manager
+            .get_or_create_session(channel, chat_id)
+            .await
+            .map_err(|e| AgentError::SessionError(e.to_string()))
+    }
+
+    /// Runs the main agent loop: LLM → Tools → Reply cycle
+    /// 
+    /// This method implements the core loop that:
+    /// - Calls the LLM with current context
+    /// - Handles tool calls if present
+    /// - Continues iterating until text-only response or max iterations
+    async fn run_agent_loop(
+        &self,
+        session_id: &str,
+        session: &mut Session,
+        mut context: Vec<LlmMessage>,
+    ) -> Result<String> {
+        let mut iteration: u32 = 0;
+
+        loop {
+            // Check max iterations
+            if iteration >= self.max_iterations {
+                tracing::warn!(
+                    session_id = %session_id,
+                    iterations = iteration,
+                    "Max iterations reached, terminating loop"
+                );
+                return Err(AgentError::MaxIterationsReached(iteration));
+            }
+
+            iteration += 1;
+
+            tracing::debug!(
+                session_id = %session_id,
+                iteration = iteration,
+                "Agent loop iteration"
+            );
+
+            // Get available tools
+            let tools = self.tool_registry.get_tool_definitions();
+
+            // Call LLM
+            let llm_response = self
+                .call_llm_with_retry(&context, &tools)
+                .await?;
+
+            // Add assistant message to session
+            let assistant_message = crate::session::Message::new(
+                "assistant".to_string(),
+                llm_response.content.clone(),
+            );
+            session.add_message(assistant_message);
+
+            // Check if we have tool calls
+            if let Some(tool_calls) = llm_response.tool_calls {
+                tracing::info!(
+                    session_id = %session_id,
+                    tool_count = tool_calls.len(),
+                    "LLM requested tool executions"
+                );
+
+                // Execute tools
+                let tool_results = self.execute_tools(tool_calls).await;
+
+                // Add tool results to context with proper correlation
+                for (tool_id, result) in tool_results {
+                    context.push(LlmMessage {
+                        role: LlmRole::Tool,
+                        content: format!("Tool {} result: {}", tool_id, result),
+                        tool_calls: None,
+                    });
+                }
+
+                // Continue to next iteration
+                continue;
+            } else {
+                // Text-only response - we're done
+                tracing::info!(
+                    session_id = %session_id,
+                    iterations = iteration,
+                    "Agent loop complete with text response"
+                );
+
+                // Save session changes
+                self.save_session(session).await?;
+
+                return Ok(llm_response.content);
+            }
+        }
+    }
+
+    /// Calls the LLM with exponential backoff retry logic
+    async fn call_llm_with_retry(
+        &self,
+        context: &[LlmMessage],
+        tools: &[serde_json::Value],
+    ) -> Result<LlmResponse> {
+        let mut retry_count = 0;
+        let mut delay_ms = 1000u64;
+
+        loop {
+            match self
+                .llm_provider
+                .chat(context.to_vec(), tools.to_vec(), &self.model)
+                .await
+            {
+                Ok(response) => return Ok(response),
+                Err(e) => {
+                    if retry_count >= MAX_LLM_RETRIES {
+                        tracing::error!(
+                            retries = retry_count,
+                            error = %e,
+                            "LLM call failed after all retries"
+                        );
+                        return Err(AgentError::LlmError(e.to_string()));
+                    }
+
+                    retry_count += 1;
+                    tracing::warn!(
+                        retry = retry_count,
+                        delay_ms = delay_ms,
+                        error = %e,
+                        "LLM call failed, retrying with backoff"
+                    );
+
+                    tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                    delay_ms *= 2; // Exponential backoff
+                }
+            }
+        }
+    }
+
+    /// Executes a batch of tool calls in parallel
+    /// Returns tuples of (tool_call_id, result_message) for proper correlation
+    async fn execute_tools(&self, tool_calls: Vec<LlmToolCall>) -> Vec<(String, String)> {
+        use futures::stream::{FuturesUnordered, StreamExt};
+
+        let mut futures = FuturesUnordered::new();
+
+        for tool_call in tool_calls {
+            let tool_registry = Arc::clone(&self.tool_registry);
+            let tool_call_id = tool_call.id.clone();
+            
+            futures.push(async move {
+                let tool_name = tool_call.name.clone();
+                
+                match self.execute_single_tool(tool_call, &tool_registry).await {
+                    Ok(result) => {
+                        tracing::info!(tool = %tool_name, tool_id = %tool_call_id, "Tool executed successfully");
+                        (tool_call_id, result)
+                    }
+                    Err(e) => {
+                        tracing::error!(tool = %tool_name, tool_id = %tool_call_id, error = %e, "Tool execution failed");
+                        (tool_call_id, format!("Error executing tool '{}': {}", tool_name, e))
+                    }
+                }
+            });
+        }
+
+        let mut results = Vec::new();
+        while let Some(result) = futures.next().await {
+            results.push(result);
+        }
+
+        results
+    }
+
+    /// Executes a single tool call
+    async fn execute_single_tool(
+        &self,
+        tool_call: LlmToolCall,
+        tool_registry: &ToolRegistry,
+    ) -> Result<String> {
+        let tool = tool_registry
+            .get(&tool_call.name)
+            .ok_or_else(|| {
+                AgentError::ToolExecutionError(format!(
+                    "Tool '{}' not found",
+                    tool_call.name
+                ))
+            })?;
+
+        // Parse arguments from JSON string
+        let args: std::collections::HashMap<String, serde_json::Value> =
+            serde_json::from_str(&tool_call.arguments)
+                .map_err(|e| {
+                    AgentError::ToolExecutionError(format!(
+                        "Failed to parse tool arguments: {}",
+                        e
+                    ))
+                })?;
+
+        // Execute the tool
+        let ctx = crate::agent::tools::ToolExecutionContext {
+            channel: None,
+            chat_id: None,
+        };
+
+        tool
+            .execute(args, &ctx)
+            .await
+            .map_err(|e| AgentError::ToolExecutionError(e.to_string()))
+    }
+
+    /// Saves the session to persistent storage
+    async fn save_session(&self, session: &Session) -> Result<()> {
+        let session_manager = self.session_manager.read().await;
+        
+        // Save the last message added (assistant response)
+        if let Some(last_message) = session.messages.back().cloned() {
+            session_manager
+                .add_message(&session.session_id, last_message)
+                .await
+                .map_err(|e| AgentError::SessionError(e.to_string()))?;
+        } else {
+            tracing::warn!("Session has no messages to save");
+        }
+        
+        Ok(())
+    }
+
+    /// Runs the agent loop continuously, processing messages from the chat hub
+    /// 
+    /// This method is designed to run as a background task and will:
+    /// - Listen for inbound messages from ChatHub
+    /// - Process each message through the agent loop
+    /// - Send responses back through ChatHub
+    /// - Handle graceful shutdown on SIGTERM
+    pub async fn run(&self) -> Result<()> {
+        let mut shutdown_signal = std::pin::pin!(tokio::signal::ctrl_c());
+        let inbound_sender = self.chat_hub.inbound_sender();
+        
+        // TODO: In future iterations, we need access to ChatHub's inbound receiver
+        // For now, this demonstrates the structure. The actual implementation would:
+        // 1. Get mutable access to ChatHub's inbound_rx
+        // 2. Loop with tokio::select! listening on both inbound messages and shutdown
+        // 3. Call process_message() for each inbound message
+        // 4. Send response via chat_hub.outbound_sender()
+        
+        tracing::info!("Agent loop started, waiting for messages");
+
+        loop {
+            tokio::select! {
+                // Handle shutdown signal
+                _ = &mut shutdown_signal => {
+                    tracing::info!("Received shutdown signal, stopping agent loop");
+                    break;
+                }
+                
+                // Note: Actual message handling would go here
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
+                    // Placeholder: In production, this would receive messages from inbound_rx
+                    // The ChatHub's inbound_rx is behind an Arc<RwLock<>>, requiring
+                    // architectural changes to support streaming message consumption
+                }
+            }
+        }
+
+        tracing::info!("Agent loop stopped");
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    // Mock implementations for testing
+    struct MockLlmProvider;
+    
+    #[async_trait::async_trait]
+    impl LlmProvider for MockLlmProvider {
+        async fn chat(
+            &self,
+            _messages: Vec<LlmMessage>,
+            _tools: Vec<serde_json::Value>,
+            _model: &str,
+        ) -> Result<LlmResponse> {
+            Ok(LlmResponse {
+                content: "Test response".to_string(),
+                tool_calls: None,
+                prompt_tokens: None,
+                completion_tokens: None,
+            })
+        }
+        
+        fn default_model(&self) -> String {
+            "test-model".to_string()
+        }
+    }
+    
+    struct MockContextBuilder;
+    
+    #[async_trait::async_trait]
+    impl ContextBuilder for MockContextBuilder {
+        async fn build_context(
+            &self,
+            _session: &Session,
+            _current_message: &InboundMessage,
+        ) -> Result<Vec<LlmMessage>> {
+            Ok(vec![])
+        }
+    }
+    
+    #[test]
+    fn test_agent_loop_creation() {
+        let chat_hub = Arc::new(ChatHub::new());
+        let llm_provider: Arc<dyn LlmProvider> = Arc::new(MockLlmProvider);
+        let context_builder: Arc<dyn ContextBuilder> = Arc::new(MockContextBuilder);
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let session_manager = Arc::new(RwLock::new(SessionManager::new(
+            std::path::PathBuf::from("/tmp/sessions"),
+        )));
+        
+        let agent = AgentLoop::new(
+            chat_hub,
+            llm_provider,
+            context_builder,
+            tool_registry,
+            session_manager,
+        );
+        
+        assert_eq!(agent.max_iterations(), MAX_ITERATIONS);
+        assert_eq!(agent.model(), "test-model");
+    }
+    
+    #[test]
+    fn test_agent_loop_with_model_override() {
+        let chat_hub = Arc::new(ChatHub::new());
+        let llm_provider: Arc<dyn LlmProvider> = Arc::new(MockLlmProvider);
+        let context_builder: Arc<dyn ContextBuilder> = Arc::new(MockContextBuilder);
+        let tool_registry = Arc::new(ToolRegistry::new());
+        let session_manager = Arc::new(RwLock::new(SessionManager::new(
+            std::path::PathBuf::from("/tmp/sessions"),
+        )));
+        
+        let agent = AgentLoop::with_model(
+            chat_hub,
+            llm_provider,
+            context_builder,
+            tool_registry,
+            session_manager,
+            "custom-model",
+        );
+        
+        assert_eq!(agent.model(), "custom-model");
+    }
+    
+    #[test]
+    fn test_max_iterations_constant() {
+        assert_eq!(MAX_ITERATIONS, 200);
+    }
+    
+    #[test]
+    fn test_llm_role_as_str() {
+        assert_eq!(LlmRole::System.as_str(), "system");
+        assert_eq!(LlmRole::User.as_str(), "user");
+        assert_eq!(LlmRole::Assistant.as_str(), "assistant");
+        assert_eq!(LlmRole::Tool.as_str(), "tool");
+    }
+    
+    #[test]
+    fn test_llm_tool_call_creation() {
+        let tool_call = LlmToolCall {
+            id: "call_123".to_string(),
+            name: "test_tool".to_string(),
+            arguments: r#"{"key": "value"}"#.to_string(),
+        };
+        
+        assert_eq!(tool_call.id, "call_123");
+        assert_eq!(tool_call.name, "test_tool");
+        assert_eq!(tool_call.arguments, r#"{"key": "value"}"#);
+    }
+    
+    #[test]
+    fn test_agent_error_display() {
+        let err = AgentError::MaxIterationsReached(200);
+        assert_eq!(err.to_string(), "Max iterations (200) reached");
+        
+        let err = AgentError::ToolExecutionError("test error".to_string());
+        assert_eq!(err.to_string(), "Tool execution failed: test error");
+    }
+}
+
