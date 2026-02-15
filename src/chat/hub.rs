@@ -3,7 +3,12 @@ use tokio::sync::mpsc;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
+use std::time::Duration;
 use crate::chat::types::{InboundMessage, OutboundMessage};
+
+const MAX_RETRIES: u32 = 3;
+const INITIAL_RETRY_DELAY_MS: u64 = 100;
+const BUFFER_WAIT_MS: u64 = 100;
 
 #[derive(Error, Debug)]
 pub enum ChatError {
@@ -17,12 +22,16 @@ pub enum ChatError {
 
 pub type Result<T> = std::result::Result<T, ChatError>;
 
+/// Callback type for delivery failure notifications
+pub type DeliveryFailureCallback = Arc<dyn Fn(String, OutboundMessage) + Send + Sync>;
+
 pub struct ChatHub {
     inbound_tx: mpsc::Sender<InboundMessage>,
     inbound_rx: Arc<RwLock<mpsc::Receiver<InboundMessage>>>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
     outbound_rx: Arc<RwLock<mpsc::Receiver<OutboundMessage>>>,
     channels: Arc<RwLock<HashMap<String, mpsc::Sender<OutboundMessage>>>>,
+    delivery_failure_callback: Option<DeliveryFailureCallback>,
 }
 
 impl ChatHub {
@@ -36,6 +45,22 @@ impl ChatHub {
             outbound_tx,
             outbound_rx: Arc::new(RwLock::new(outbound_rx)),
             channels: Arc::new(RwLock::new(HashMap::new())),
+            delivery_failure_callback: None,
+        }
+    }
+
+    /// Register a callback to be notified when message delivery fails
+    pub fn on_delivery_failure(&mut self, callback: impl Fn(String, OutboundMessage) + Send + Sync + 'static) {
+        self.delivery_failure_callback = Some(Arc::new(callback));
+    }
+
+    /// Notify agent of delivery failure
+    async fn notify_delivery_failure(&self,
+        error: String,
+        message: OutboundMessage,
+    ) {
+        if let Some(callback) = &self.delivery_failure_callback {
+            callback(error, message);
         }
     }
 
@@ -86,14 +111,25 @@ impl ChatHub {
         match self.outbound_tx.try_send(message) {
             Ok(_) => Ok(()),
             Err(mpsc::error::TrySendError::Full(msg)) => {
-                tracing::warn!("Outbound buffer full, dropping oldest message");
-                if let Ok(mut rx) = self.outbound_rx.try_write() {
-                    let _ = rx.try_recv();
+                // AC 4: Wait briefly for space before dropping
+                tracing::warn!("Outbound buffer full, waiting briefly for space");
+                tokio::time::sleep(Duration::from_millis(BUFFER_WAIT_MS)).await;
+                
+                // Try again after waiting
+                match self.outbound_tx.try_send(msg) {
+                    Ok(_) => return Ok(()),
+                    Err(mpsc::error::TrySendError::Full(msg)) => {
+                        tracing::warn!("Outbound buffer still full, dropping oldest message");
+                        if let Ok(mut rx) = self.outbound_rx.try_write() {
+                            let _ = rx.try_recv();
+                        }
+                        self.outbound_tx
+                            .send(msg)
+                            .await
+                            .map_err(|e| ChatError::SendError(e.to_string()))
+                    }
+                    Err(e) => Err(ChatError::SendError(e.to_string())),
                 }
-                self.outbound_tx
-                    .send(msg)
-                    .await
-                    .map_err(|e| ChatError::SendError(e.to_string()))
             }
             Err(e) => Err(ChatError::SendError(e.to_string())),
         }
@@ -125,12 +161,42 @@ impl ChatHub {
     pub async fn route_outbound(&self, message: OutboundMessage) -> Result<()> {
         let channels = self.channels.read().await;
         if let Some(sender) = channels.get(&message.channel) {
-            sender
-                .send(message)
-                .await
-                .map_err(|e| ChatError::SendError(e.to_string()))
+            // AC 2 & 3: Retry with exponential backoff
+            let mut retry_count = 0;
+            let mut delay_ms = INITIAL_RETRY_DELAY_MS;
+            
+            loop {
+                match sender.try_send(message.clone()) {
+                    Ok(_) => return Ok(()),
+                    Err(mpsc::error::TrySendError::Full(_)) if retry_count < MAX_RETRIES => {
+                        tracing::warn!(
+                            retry = retry_count + 1,
+                            delay_ms = delay_ms,
+                            "Channel full, retrying with backoff"
+                        );
+                        tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                        delay_ms *= 2; // Exponential backoff
+                        retry_count += 1;
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Failed to send after {} retries: {}", retry_count, e);
+                        tracing::error!(error = %error_msg, "Message delivery failed");
+                        
+                        // AC 3: Notify agent of delivery failure
+                        self.notify_delivery_failure(error_msg.clone(), message).await;
+                        
+                        return Err(ChatError::SendError(error_msg));
+                    }
+                }
+            }
         } else {
-            Err(ChatError::ChannelNotFound(message.channel))
+            let error_msg = format!("Channel not found: {}", message.channel);
+            tracing::error!(error = %error_msg);
+            
+            // AC 3: Notify agent of delivery failure
+            self.notify_delivery_failure(error_msg.clone(), message).await;
+            
+            Err(ChatError::ChannelNotFound(error_msg))
         }
     }
 
@@ -325,5 +391,47 @@ mod tests {
         let msg = rx.try_recv().unwrap();
         assert_eq!(msg.content, "Reply");
         assert_eq!(msg.reply_to, Some("mid_456".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_buffer_overflow_outbound() {
+        let hub = ChatHub::new();
+        
+        // Fill the buffer (capacity 100)
+        for i in 0..100 {
+            hub.send_outbound(OutboundMessage::new("test", "123", format!("msg {}", i))).await.unwrap();
+        }
+        
+        // Send one more - should trigger overflow logic (wait briefly, then drop oldest)
+        hub.send_outbound(OutboundMessage::new("test", "123", "overflow")).await.unwrap();
+        
+        // Check that we can still receive
+        let mut rx = hub.outbound_rx.write().await;
+        let msg1 = rx.recv().await.unwrap();
+        // Since we dropped the oldest (msg 0), the first one should be msg 1
+        assert_eq!(msg1.content, "msg 1");
+    }
+
+    #[tokio::test]
+    async fn test_delivery_failure_notification() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        
+        let mut hub = ChatHub::new();
+        let notification_received = Arc::new(AtomicBool::new(false));
+        let notification_received_clone = notification_received.clone();
+        
+        // Register a delivery failure callback
+        hub.on_delivery_failure(move |_error: String, _msg: OutboundMessage| {
+            notification_received_clone.store(true, Ordering::SeqCst);
+        });
+        
+        // Try to route to unregistered channel - should trigger failure notification
+        let msg = OutboundMessage::new("unknown", "123", "Test");
+        let result = hub.route_outbound(msg).await;
+        
+        assert!(result.is_err());
+        // Give async callback time to execute
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(notification_received.load(Ordering::SeqCst), "Delivery failure notification should have been received");
     }
 }
