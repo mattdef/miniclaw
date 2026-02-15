@@ -136,6 +136,18 @@ impl SessionManager {
     pub async fn session_count(&self) -> usize {
         self.sessions.read().await.len()
     }
+
+    /// Updates (or inserts) a complete session in the manager
+    pub async fn update_session(&self, session: Session) -> Result<()> {
+        let mut guard = self.sessions.write().await;
+        guard.insert(session.session_id.clone(), session);
+        Ok(())
+    }
+
+    /// Saves a specific session to disk immediately
+    pub async fn persist_session(&self, session: &Session) -> Result<()> {
+        self.persistence.save_session(session).await
+    }
 }
 
 #[cfg(test)]

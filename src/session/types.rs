@@ -60,6 +60,33 @@ impl Message {
         self.tool_calls = Some(tool_calls);
         self
     }
+
+    /// Creates a tool result message
+    /// Note: Uses "tool_result" role (not "tool") to distinguish session storage
+    /// from LLM message roles. ContextBuilder translates this to LlmRole::Tool.
+    pub fn tool_result(content: String) -> Self {
+        Self {
+            role: "tool_result".to_string(),
+            content,
+            timestamp: Utc::now(),
+            tool_calls: None,
+        }
+    }
+
+    /// Checks if this message is from a user
+    pub fn is_user(&self) -> bool {
+        self.role == "user"
+    }
+
+    /// Checks if this message is from the assistant
+    pub fn is_assistant(&self) -> bool {
+        self.role == "assistant"
+    }
+
+    /// Checks if this message is a tool result
+    pub fn is_tool_result(&self) -> bool {
+        self.role == "tool_result"
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

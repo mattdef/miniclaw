@@ -332,7 +332,7 @@ impl ContextBuilderImpl {
                 let role = match msg.role.as_str() {
                     "user" => LlmRole::User,
                     "assistant" => LlmRole::Assistant,
-                    "tool" => LlmRole::Tool,
+                    "tool" | "tool_result" => LlmRole::Tool,  // Support both "tool" and "tool_result" roles
                     other => {
                         tracing::warn!(role = %other, "Unknown message role, treating as User");
                         LlmRole::User  // Default to User, not System (AC #6)
