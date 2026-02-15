@@ -1,6 +1,8 @@
 use clap::{CommandFactory, Parser, Subcommand};
 use std::process;
 
+use crate::config::{load_config, Config};
+
 #[derive(Parser)]
 #[command(name = "miniclaw")]
 #[command(about = "Your AI agent for edge hardware")]
@@ -12,6 +14,14 @@ pub struct Cli {
     /// Enable verbose logging (DEBUG level)
     #[arg(short, long, global = true)]
     pub verbose: bool,
+
+    /// Model to use (overrides config file and environment)
+    #[arg(long, global = true, value_name = "MODEL")]
+    pub model: Option<String>,
+
+    /// Path to config file (overrides default ~/.miniclaw/config.json)
+    #[arg(long, global = true, value_name = "PATH")]
+    pub config: Option<std::path::PathBuf>,
 
     #[command(subcommand)]
     pub command: Option<Commands>,
@@ -68,15 +78,23 @@ pub enum Commands {
 pub fn run(cli: Cli) {
     tracing::debug!("CLI parsing complete, processing command");
 
+    let config = match load_config(cli.model.clone(), cli.config.clone()) {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            eprintln!("Error loading configuration: {}", e);
+            process::exit(1);
+        }
+    };
+
     match cli.command {
         Some(Commands::Version) => {
             tracing::debug!("Executing version command");
-            print_version();
+            print_version(&config);
             process::exit(0);
         }
         Some(Commands::Onboard { yes, path }) => {
             tracing::debug!("Executing onboard command");
-            handle_onboard(yes, path);
+            handle_onboard(yes, path, &config);
             process::exit(0);
         }
         Some(Commands::Help { command }) => {
@@ -86,26 +104,31 @@ pub fn run(cli: Cli) {
         }
         None => {
             tracing::debug!("No subcommand provided, showing help");
-            // Use clap's native help generation
             let mut cmd = Cli::command();
             cmd.print_help().unwrap();
-            println!(); // Add newline after help
+            println!();
             process::exit(0);
         }
     }
 }
 
-fn print_version() {
+fn print_version(config: &Config) {
     tracing::info!("Displaying version information");
     println!("miniclaw {}", env!("CARGO_PKG_VERSION"));
+    if let Some(model) = &config.model {
+        println!("Default model: {}", model);
+    }
 }
 
-fn handle_onboard(yes: bool, path: Option<String>) {
+fn handle_onboard(yes: bool, path: Option<String>, config: &Config) {
     tracing::info!(yes = yes, path = ?path, "Onboard command placeholder");
     println!("Onboard command - to be implemented");
     println!("Skip prompts: {}", yes);
     if let Some(p) = path {
         println!("Custom path: {}", p);
+    }
+    if let Some(model) = &config.model {
+        println!("Configured model: {}", model);
     }
 }
 
