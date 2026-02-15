@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 use tracing::{error, info};
 
 pub const PERSISTENCE_INTERVAL_SECS: u64 = 30;
@@ -27,7 +27,7 @@ impl SessionManager {
     pub async fn initialize(&self) -> Result<()> {
         // Create sessions directory
         self.persistence.create_sessions_dir().await?;
-        
+
         // Load existing sessions
         let sessions = self.persistence.load_all_sessions().await?;
         let mut guard = self.sessions.write().await;
@@ -35,18 +35,17 @@ impl SessionManager {
             guard.insert(session.session_id.clone(), session);
         }
         drop(guard);
-        
-        info!("SessionManager initialized with {} sessions", self.sessions.read().await.len());
+
+        info!(
+            "SessionManager initialized with {} sessions",
+            self.sessions.read().await.len()
+        );
         Ok(())
     }
 
-    pub async fn get_or_create_session(
-        &self,
-        channel: &str,
-        chat_id: &str
-    ) -> Result<Session> {
+    pub async fn get_or_create_session(&self, channel: &str, chat_id: &str) -> Result<Session> {
         let session_id = format!("{}_{}", channel, chat_id);
-        
+
         // Check if session exists in memory
         {
             let guard = self.sessions.read().await;
@@ -54,7 +53,7 @@ impl SessionManager {
                 return Ok(session.clone());
             }
         }
-        
+
         // Try to load from disk
         match self.persistence.load_session(&session_id).await {
             Ok(session) => {
@@ -72,12 +71,9 @@ impl SessionManager {
         }
     }
 
-    pub async fn add_message(&self,
-        session_id: &str,
-        message: Message
-    ) -> Result<()> {
+    pub async fn add_message(&self, session_id: &str, message: Message) -> Result<()> {
         let mut guard = self.sessions.write().await;
-        
+
         if let Some(session) = guard.get_mut(session_id) {
             session.add_message(message);
             Ok(())
@@ -86,9 +82,7 @@ impl SessionManager {
         }
     }
 
-    pub async fn get_session(&self,
-        session_id: &str
-    ) -> Option<Session> {
+    pub async fn get_session(&self, session_id: &str) -> Option<Session> {
         let guard = self.sessions.read().await;
         guard.get(session_id).cloned()
     }
@@ -114,17 +108,20 @@ impl SessionManager {
 
         tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(PERSISTENCE_INTERVAL_SECS));
-            
+
             loop {
                 interval.tick().await;
-                
+
                 let guard = sessions.read().await;
                 let sessions_vec: Vec<Session> = guard.values().cloned().collect();
                 drop(guard);
 
                 for session in sessions_vec {
                     if let Err(e) = persistence.save_session(&session).await {
-                        error!("Auto-persistence failed for session {}: {}", session.session_id, e);
+                        error!(
+                            "Auto-persistence failed for session {}: {}",
+                            session.session_id, e
+                        );
                     }
                 }
 
@@ -159,9 +156,9 @@ mod tests {
     async fn test_session_manager_initialization() {
         let temp_dir = TempDir::new().unwrap();
         let manager = SessionManager::new(temp_dir.path().to_path_buf());
-        
+
         manager.initialize().await.unwrap();
-        
+
         // Directory should exist
         assert!(temp_dir.path().exists());
     }
@@ -172,7 +169,10 @@ mod tests {
         let manager = SessionManager::new(temp_dir.path().to_path_buf());
         manager.initialize().await.unwrap();
 
-        let session = manager.get_or_create_session("telegram", "123").await.unwrap();
+        let session = manager
+            .get_or_create_session("telegram", "123")
+            .await
+            .unwrap();
         assert_eq!(session.session_id, "telegram_123");
         assert_eq!(session.channel, "telegram");
         assert_eq!(session.chat_id, "123");
@@ -184,11 +184,17 @@ mod tests {
         let manager = SessionManager::new(temp_dir.path().to_path_buf());
         manager.initialize().await.unwrap();
 
-        let session = manager.get_or_create_session("telegram", "123").await.unwrap();
+        let session = manager
+            .get_or_create_session("telegram", "123")
+            .await
+            .unwrap();
         let message = Message::new("user".to_string(), "Hello".to_string());
-        
-        manager.add_message(&session.session_id, message).await.unwrap();
-        
+
+        manager
+            .add_message(&session.session_id, message)
+            .await
+            .unwrap();
+
         let updated = manager.get_session(&session.session_id).await.unwrap();
         assert_eq!(updated.messages.len(), 1);
         assert_eq!(updated.messages[0].content, "Hello");
@@ -197,25 +203,34 @@ mod tests {
     #[tokio::test]
     async fn test_persistence_roundtrip() {
         let temp_dir = TempDir::new().unwrap();
-        
+
         // Create manager and add session
         {
             let manager = SessionManager::new(temp_dir.path().to_path_buf());
             manager.initialize().await.unwrap();
 
-            let session = manager.get_or_create_session("telegram", "123").await.unwrap();
+            let session = manager
+                .get_or_create_session("telegram", "123")
+                .await
+                .unwrap();
             let message = Message::new("user".to_string(), "Test".to_string());
-            manager.add_message(&session.session_id, message).await.unwrap();
-            
+            manager
+                .add_message(&session.session_id, message)
+                .await
+                .unwrap();
+
             manager.save_all_sessions().await.unwrap();
         }
-        
+
         // Create new manager and verify session loads
         {
             let manager = SessionManager::new(temp_dir.path().to_path_buf());
             manager.initialize().await.unwrap();
 
-            let session = manager.get_or_create_session("telegram", "123").await.unwrap();
+            let session = manager
+                .get_or_create_session("telegram", "123")
+                .await
+                .unwrap();
             assert_eq!(session.messages.len(), 1);
             assert_eq!(session.messages[0].content, "Test");
         }
@@ -229,8 +244,14 @@ mod tests {
 
         assert_eq!(manager.session_count().await, 0);
 
-        manager.get_or_create_session("telegram", "111").await.unwrap();
-        manager.get_or_create_session("telegram", "222").await.unwrap();
+        manager
+            .get_or_create_session("telegram", "111")
+            .await
+            .unwrap();
+        manager
+            .get_or_create_session("telegram", "222")
+            .await
+            .unwrap();
 
         assert_eq!(manager.session_count().await, 2);
     }

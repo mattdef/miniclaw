@@ -6,6 +6,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::providers::openai::OpenRouterProvider;
 use crate::providers::{BoxedProvider, ProviderError};
 
 /// Configuration for OpenRouter provider
@@ -185,6 +186,7 @@ impl Default for OllamaConfig {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ProviderConfig {
     /// OpenRouter provider configuration
+    #[serde(rename = "openrouter")]
     OpenRouter(OpenRouterConfig),
     /// Ollama local provider configuration
     Ollama(OllamaConfig),
@@ -263,11 +265,10 @@ impl ProviderFactory {
         config.validate()?;
 
         match config {
-            ProviderConfig::OpenRouter(_config) => {
-                // TODO: Create OpenRouter provider when implemented in Story 4.2
-                Err(ProviderError::config(
-                    "OpenRouter provider not yet implemented. See Story 4.2",
-                ))
+            ProviderConfig::OpenRouter(config) => {
+                // Create OpenRouter provider with the given configuration
+                let provider = OpenRouterProvider::new(config);
+                Ok(Box::new(provider))
             }
             ProviderConfig::Ollama(_config) => {
                 // TODO: Create Ollama provider when implemented in Story 4.3
@@ -398,15 +399,15 @@ mod tests {
     }
 
     #[test]
-    fn test_factory_create_openrouter_returns_error() {
+    fn test_factory_create_openrouter_success() {
         let config = ProviderConfig::openrouter("test-key");
         let result = ProviderFactory::create(config);
 
-        // Should fail since OpenRouter provider not implemented yet
-        assert!(result.is_err());
-        if let Err(err) = result {
-            assert!(err.to_string().contains("not yet implemented"));
-        }
+        // Should succeed now that OpenRouter provider is implemented
+        assert!(result.is_ok());
+        let provider = result.unwrap();
+        assert_eq!(provider.provider_name(), "openrouter");
+        assert_eq!(provider.default_model(), "anthropic/claude-3.5-sonnet");
     }
 
     #[test]
@@ -414,7 +415,7 @@ mod tests {
         let config = ProviderConfig::ollama();
         let result = ProviderFactory::create(config);
 
-        // Should fail since Ollama provider not implemented yet
+        // Should fail since Ollama provider not implemented yet (Story 4.3)
         assert!(result.is_err());
         if let Err(err) = result {
             assert!(err.to_string().contains("not yet implemented"));
@@ -426,8 +427,17 @@ mod tests {
         let json = r#"{"type":"openrouter","api_key":"test","default_model":"model"}"#;
         let result = ProviderFactory::create_from_json(json);
 
-        // Should fail since provider not implemented yet
-        assert!(result.is_err());
+        // Debug: print the error if it fails
+        match &result {
+            Ok(_) => {}
+            Err(e) => eprintln!("Error creating provider from JSON: {}", e),
+        }
+
+        // Should succeed now that OpenRouter provider is implemented
+        assert!(result.is_ok());
+        let provider = result.unwrap();
+        assert_eq!(provider.provider_name(), "openrouter");
+        assert_eq!(provider.default_model(), "model");
     }
 
     #[test]

@@ -26,19 +26,23 @@
 //! }
 //! ```
 
-use std::fmt;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 pub mod error;
 pub mod factory;
 #[cfg(test)]
 pub mod mock;
+pub mod openai;
 
 // Export error types
 pub use error::ProviderError;
 
 // Export factory types and configs
 pub use factory::{OllamaConfig, OpenRouterConfig, ProviderConfig, ProviderFactory};
+
+// Export OpenAI/OpenRouter provider
+pub use openai::OpenRouterProvider;
 
 /// Represents a message in the conversation for LLM context
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -134,7 +138,11 @@ pub struct LlmToolCall {
 
 impl LlmToolCall {
     /// Creates a new tool call
-    pub fn new(id: impl Into<String>, name: impl Into<String>, arguments: impl Into<String>) -> Self {
+    pub fn new(
+        id: impl Into<String>,
+        name: impl Into<String>,
+        arguments: impl Into<String>,
+    ) -> Self {
         Self {
             id: id.into(),
             name: name.into(),
@@ -190,7 +198,10 @@ impl LlmResponse {
 
     /// Returns true if this response contains tool calls
     pub fn has_tool_calls(&self) -> bool {
-        self.tool_calls.as_ref().map(|c| !c.is_empty()).unwrap_or(false)
+        self.tool_calls
+            .as_ref()
+            .map(|c| !c.is_empty())
+            .unwrap_or(false)
     }
 
     /// Returns the total token count if available
@@ -318,9 +329,9 @@ mod tests {
     #[test]
     fn test_llm_message_with_tool_calls() {
         let tool_call = LlmToolCall::new("call_1", "test_tool", "{}");
-        let msg = LlmMessage::new(LlmRole::Assistant, "Let me help")
-            .with_tool_calls(vec![tool_call]);
-        
+        let msg =
+            LlmMessage::new(LlmRole::Assistant, "Let me help").with_tool_calls(vec![tool_call]);
+
         assert!(msg.tool_calls.is_some());
         assert_eq!(msg.tool_calls.as_ref().unwrap().len(), 1);
         assert!(msg.is_assistant());
@@ -328,11 +339,7 @@ mod tests {
 
     #[test]
     fn test_llm_tool_call_parse_arguments() {
-        let tool_call = LlmToolCall::new(
-            "call_1",
-            "test_tool",
-            r#"{"key": "value", "num": 42}"#
-        );
+        let tool_call = LlmToolCall::new("call_1", "test_tool", r#"{"key": "value", "num": 42}"#);
 
         #[derive(serde::Deserialize)]
         struct Args {
@@ -356,8 +363,7 @@ mod tests {
     #[test]
     fn test_llm_response_with_tool_calls() {
         let tool_call = LlmToolCall::new("call_1", "test_tool", "{}");
-        let response = LlmResponse::new("I'll help")
-            .with_tool_calls(vec![tool_call]);
+        let response = LlmResponse::new("I'll help").with_tool_calls(vec![tool_call]);
 
         assert!(response.has_tool_calls());
         assert_eq!(response.tool_calls.as_ref().unwrap().len(), 1);
@@ -365,8 +371,7 @@ mod tests {
 
     #[test]
     fn test_llm_response_with_tokens() {
-        let response = LlmResponse::new("Hello")
-            .with_tokens(10, 5);
+        let response = LlmResponse::new("Hello").with_tokens(10, 5);
 
         assert_eq!(response.prompt_tokens, Some(10));
         assert_eq!(response.completion_tokens, Some(5));

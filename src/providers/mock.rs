@@ -75,7 +75,8 @@ impl MockLlmProvider {
     }
 
     /// Sets a response with tool calls
-    pub fn set_response_with_tool_calls(&self,
+    pub fn set_response_with_tool_calls(
+        &self,
         content: impl Into<String>,
         tool_calls: Vec<LlmToolCall>,
     ) {
@@ -188,7 +189,8 @@ impl MockProviderBuilder {
         content: impl Into<String>,
         tool_calls: Vec<LlmToolCall>,
     ) -> Self {
-        self.provider.set_response_with_tool_calls(content, tool_calls);
+        self.provider
+            .set_response_with_tool_calls(content, tool_calls);
         self
     }
 

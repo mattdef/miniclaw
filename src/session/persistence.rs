@@ -14,10 +14,12 @@ impl Persistence {
     }
 
     pub async fn save_session(&self, session: &Session) -> Result<()> {
-        let file_path = self.sessions_dir.join(format!("{}.json", session.session_id));
-        let json = serde_json::to_string_pretty(session)
-            .context("Failed to serialize session to JSON")?;
-        
+        let file_path = self
+            .sessions_dir
+            .join(format!("{}.json", session.session_id));
+        let json =
+            serde_json::to_string_pretty(session).context("Failed to serialize session to JSON")?;
+
         fs::write(&file_path, json)
             .await
             .with_context(|| format!("Failed to write session file: {:?}", file_path))?;
@@ -38,20 +40,18 @@ impl Persistence {
 
     pub async fn load_session(&self, session_id: &str) -> Result<Session> {
         let file_path = self.sessions_dir.join(format!("{}.json", session_id));
-        
+
         match fs::read_to_string(&file_path).await {
-            Ok(json) => {
-                match serde_json::from_str::<Session>(&json) {
-                    Ok(session) => {
-                        info!("Loaded session {} from {:?}", session_id, file_path);
-                        Ok(session)
-                    }
-                    Err(e) => {
-                        error!("Failed to parse session {}: {}", session_id, e);
-                        self.handle_corrupted_file(&file_path, session_id).await
-                    }
+            Ok(json) => match serde_json::from_str::<Session>(&json) {
+                Ok(session) => {
+                    info!("Loaded session {} from {:?}", session_id, file_path);
+                    Ok(session)
                 }
-            }
+                Err(e) => {
+                    error!("Failed to parse session {}: {}", session_id, e);
+                    self.handle_corrupted_file(&file_path, session_id).await
+                }
+            },
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
                     anyhow::bail!("Session file not found: {:?}", file_path)
@@ -63,14 +63,14 @@ impl Persistence {
 
     pub async fn load_all_sessions(&self) -> Result<Vec<Session>> {
         let mut sessions = Vec::new();
-        
-        let mut entries = fs::read_dir(&self.sessions_dir)
-            .await
-            .with_context(|| format!("Failed to read sessions directory: {:?}", self.sessions_dir))?;
+
+        let mut entries = fs::read_dir(&self.sessions_dir).await.with_context(|| {
+            format!("Failed to read sessions directory: {:?}", self.sessions_dir)
+        })?;
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
-            
+
             // Only process .json files (not .corrupted files)
             if path.extension().and_then(|s| s.to_str()) == Some("json") {
                 let session_id = path
@@ -89,22 +89,22 @@ impl Persistence {
             }
         }
 
-        info!("Loaded {} sessions from {:?}", sessions.len(), self.sessions_dir);
+        info!(
+            "Loaded {} sessions from {:?}",
+            sessions.len(),
+            self.sessions_dir
+        );
         Ok(sessions)
     }
 
-    async fn handle_corrupted_file(
-        &self,
-        file_path: &Path,
-        session_id: &str
-    ) -> Result<Session> {
+    async fn handle_corrupted_file(&self, file_path: &Path, session_id: &str) -> Result<Session> {
         let corrupted_path = file_path.with_extension("json.corrupted");
-        
+
         // Rename corrupted file
         fs::rename(file_path, &corrupted_path)
             .await
             .with_context(|| format!("Failed to rename corrupted file: {:?}", file_path))?;
-        
+
         error!(
             "Corrupted session file detected. Moved {:?} to {:?}",
             file_path, corrupted_path
@@ -120,11 +120,14 @@ impl Persistence {
 
         // Create new empty session
         let session = Session::new(channel, chat_id);
-        
+
         // Save the new session
         self.save_session(&session).await?;
-        
-        info!("Created new empty session {} to replace corrupted file", session_id);
+
+        info!(
+            "Created new empty session {} to replace corrupted file",
+            session_id
+        );
         Ok(session)
     }
 
@@ -132,7 +135,12 @@ impl Persistence {
         if !self.sessions_dir.exists() {
             fs::create_dir_all(&self.sessions_dir)
                 .await
-                .with_context(|| format!("Failed to create sessions directory: {:?}", self.sessions_dir))?;
+                .with_context(|| {
+                    format!(
+                        "Failed to create sessions directory: {:?}",
+                        self.sessions_dir
+                    )
+                })?;
 
             // Set directory permissions to 0755 on Unix
             #[cfg(unix)]
@@ -141,7 +149,9 @@ impl Persistence {
                 let permissions = std::fs::Permissions::from_mode(0o755);
                 fs::set_permissions(&self.sessions_dir, permissions)
                     .await
-                    .with_context(|| format!("Failed to set permissions on: {:?}", self.sessions_dir))?;
+                    .with_context(|| {
+                        format!("Failed to set permissions on: {:?}", self.sessions_dir)
+                    })?;
             }
 
             info!("Created sessions directory: {:?}", self.sessions_dir);
@@ -160,10 +170,10 @@ mod tests {
     async fn test_create_sessions_dir() {
         let temp_dir = TempDir::new().unwrap();
         let sessions_dir = temp_dir.path().join("sessions");
-        
+
         let persistence = Persistence::new(sessions_dir.clone());
         persistence.create_sessions_dir().await.unwrap();
-        
+
         assert!(sessions_dir.exists());
     }
 
@@ -171,15 +181,15 @@ mod tests {
     async fn test_save_and_load_session() {
         let temp_dir = TempDir::new().unwrap();
         let sessions_dir = temp_dir.path().join("sessions");
-        
+
         let persistence = Persistence::new(sessions_dir.clone());
         persistence.create_sessions_dir().await.unwrap();
 
         let mut session = Session::new("telegram".to_string(), "123456789".to_string());
         session.add_message(Message::new("user".to_string(), "Hello".to_string()));
-        
+
         persistence.save_session(&session).await.unwrap();
-        
+
         let loaded = persistence.load_session(&session.session_id).await.unwrap();
         assert_eq!(loaded.session_id, session.session_id);
         assert_eq!(loaded.messages.len(), 1);
@@ -189,17 +199,17 @@ mod tests {
     async fn test_load_all_sessions() {
         let temp_dir = TempDir::new().unwrap();
         let sessions_dir = temp_dir.path().join("sessions");
-        
+
         let persistence = Persistence::new(sessions_dir.clone());
         persistence.create_sessions_dir().await.unwrap();
 
         // Create multiple sessions
         let session1 = Session::new("telegram".to_string(), "111".to_string());
         let session2 = Session::new("telegram".to_string(), "222".to_string());
-        
+
         persistence.save_session(&session1).await.unwrap();
         persistence.save_session(&session2).await.unwrap();
-        
+
         let sessions = persistence.load_all_sessions().await.unwrap();
         assert_eq!(sessions.len(), 2);
     }
@@ -208,23 +218,21 @@ mod tests {
     async fn test_corrupted_file_handling() {
         let temp_dir = TempDir::new().unwrap();
         let sessions_dir = temp_dir.path().join("sessions");
-        
+
         let persistence = Persistence::new(sessions_dir.clone());
         persistence.create_sessions_dir().await.unwrap();
 
         // Create a corrupted JSON file
         let file_path = sessions_dir.join("telegram_123.json");
-        fs::write(&file_path, "invalid json {{")
-            .await
-            .unwrap();
-        
+        fs::write(&file_path, "invalid json {{").await.unwrap();
+
         // Load should handle corruption gracefully
         let session = persistence.load_session("telegram_123").await.unwrap();
         assert_eq!(session.session_id, "telegram_123");
-        
+
         // Original corrupted file should be renamed
         assert!(sessions_dir.join("telegram_123.json.corrupted").exists());
-        
+
         // A new file should have been created
         assert!(file_path.exists());
     }
@@ -234,20 +242,20 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            
+
             let temp_dir = TempDir::new().unwrap();
             let sessions_dir = temp_dir.path().join("sessions");
-            
+
             let persistence = Persistence::new(sessions_dir.clone());
             persistence.create_sessions_dir().await.unwrap();
 
             let session = Session::new("telegram".to_string(), "123".to_string());
             persistence.save_session(&session).await.unwrap();
-            
+
             let file_path = sessions_dir.join("telegram_123.json");
             let metadata = fs::metadata(file_path).await.unwrap();
             let permissions = metadata.permissions().mode();
-            
+
             // Check that file has 0600 permissions (0o100600 = 33152)
             assert_eq!(permissions & 0o777, 0o600);
         }

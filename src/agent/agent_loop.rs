@@ -20,19 +20,19 @@ pub const MAX_LLM_RETRIES: u32 = 3;
 pub enum AgentError {
     #[error("Context building failed: {0}")]
     ContextBuildError(String),
-    
+
     #[error("LLM communication failed: {0}")]
     LlmError(String),
-    
+
     #[error("Max iterations ({0}) reached")]
     MaxIterationsReached(u32),
-    
+
     #[error("Tool execution failed: {0}")]
     ToolExecutionError(String),
-    
+
     #[error("Session error: {0}")]
     SessionError(String),
-    
+
     #[error("Chat hub error: {0}")]
     ChatHubError(String),
 }
@@ -82,7 +82,7 @@ impl AgentLoop {
             model,
         }
     }
-    
+
     /// Creates a new AgentLoop with a specific model override
     pub fn with_model(
         chat_hub: Arc<ChatHub>,
@@ -103,19 +103,19 @@ impl AgentLoop {
             model,
         }
     }
-    
+
     /// Returns the maximum iterations limit
     pub fn max_iterations(&self) -> u32 {
         self.max_iterations
     }
-    
+
     /// Returns the current model being used
     pub fn model(&self) -> &str {
         &self.model
     }
 
     /// Processes a single inbound message through the agent loop
-    /// 
+    ///
     /// This is the main entry point for handling messages. It:
     /// 1. Gets or creates a session for the chat
     /// 2. Adds the user message to the session
@@ -124,7 +124,7 @@ impl AgentLoop {
     /// 5. Returns the final response
     pub async fn process_message(&self, message: InboundMessage) -> Result<String> {
         let session_id = format!("{}_{}", message.channel, message.chat_id);
-        
+
         tracing::info!(
             session_id = %session_id,
             channel = %message.channel,
@@ -138,10 +138,8 @@ impl AgentLoop {
             .await?;
 
         // Add user message to session
-        let user_message = crate::session::Message::new(
-            "user".to_string(),
-            message.content.clone(),
-        );
+        let user_message =
+            crate::session::Message::new("user".to_string(), message.content.clone());
         session.add_message(user_message);
 
         // Build context
@@ -158,7 +156,9 @@ impl AgentLoop {
         );
 
         // Run the main agent loop
-        let response = self.run_agent_loop(&session_id, &mut session, context).await?;
+        let response = self
+            .run_agent_loop(&session_id, &mut session, context)
+            .await?;
 
         tracing::info!(
             session_id = %session_id,
@@ -169,13 +169,9 @@ impl AgentLoop {
     }
 
     /// Gets an existing session or creates a new one
-    async fn get_or_create_session(
-        &self,
-        channel: &str,
-        chat_id: &str,
-    ) -> Result<Session> {
+    async fn get_or_create_session(&self, channel: &str, chat_id: &str) -> Result<Session> {
         let session_manager = self.session_manager.read().await;
-        
+
         session_manager
             .get_or_create_session(channel, chat_id)
             .await
@@ -183,7 +179,7 @@ impl AgentLoop {
     }
 
     /// Runs the main agent loop: LLM → Tools → Reply cycle
-    /// 
+    ///
     /// This method implements the core loop that:
     /// - Calls the LLM with current context
     /// - Handles tool calls if present
@@ -219,9 +215,7 @@ impl AgentLoop {
             let tools = self.tool_registry.get_tool_definitions();
 
             // Call LLM
-            let llm_response = self
-                .call_llm_with_retry(&context, &tools)
-                .await?;
+            let llm_response = self.call_llm_with_retry(&context, &tools).await?;
 
             // Check if we have tool calls
             if let Some(tool_calls) = llm_response.tool_calls.clone() {
@@ -244,7 +238,8 @@ impl AgentLoop {
                 let assistant_message = crate::session::Message::new(
                     "assistant".to_string(),
                     llm_response.content.clone(),
-                ).with_tool_calls(session_tool_calls);
+                )
+                .with_tool_calls(session_tool_calls);
                 session.add_message(assistant_message);
 
                 // Execute tools
@@ -260,9 +255,10 @@ impl AgentLoop {
                     });
 
                     // Add to session as tool_result message
-                    let tool_result_message = crate::session::Message::tool_result(
-                        format!("Tool {} result: {}", tool_id, result)
-                    );
+                    let tool_result_message = crate::session::Message::tool_result(format!(
+                        "Tool {} result: {}",
+                        tool_id, result
+                    ));
                     session.add_message(tool_result_message);
                 }
 
@@ -342,10 +338,10 @@ impl AgentLoop {
         for tool_call in tool_calls {
             let tool_registry = Arc::clone(&self.tool_registry);
             let tool_call_id = tool_call.id.clone();
-            
+
             futures.push(async move {
                 let tool_name = tool_call.name.clone();
-                
+
                 match self.execute_single_tool(tool_call, &tool_registry).await {
                     Ok(result) => {
                         tracing::info!(tool = %tool_name, tool_id = %tool_call_id, "Tool executed successfully");
@@ -373,24 +369,15 @@ impl AgentLoop {
         tool_call: LlmToolCall,
         tool_registry: &ToolRegistry,
     ) -> Result<String> {
-        let tool = tool_registry
-            .get(&tool_call.name)
-            .ok_or_else(|| {
-                AgentError::ToolExecutionError(format!(
-                    "Tool '{}' not found",
-                    tool_call.name
-                ))
-            })?;
+        let tool = tool_registry.get(&tool_call.name).ok_or_else(|| {
+            AgentError::ToolExecutionError(format!("Tool '{}' not found", tool_call.name))
+        })?;
 
         // Parse arguments from JSON string
         let args: std::collections::HashMap<String, serde_json::Value> =
-            serde_json::from_str(&tool_call.arguments)
-                .map_err(|e| {
-                    AgentError::ToolExecutionError(format!(
-                        "Failed to parse tool arguments: {}",
-                        e
-                    ))
-                })?;
+            serde_json::from_str(&tool_call.arguments).map_err(|e| {
+                AgentError::ToolExecutionError(format!("Failed to parse tool arguments: {}", e))
+            })?;
 
         // Execute the tool
         let ctx = crate::agent::tools::ToolExecutionContext {
@@ -398,8 +385,7 @@ impl AgentLoop {
             chat_id: None,
         };
 
-        tool
-            .execute(args, &ctx)
+        tool.execute(args, &ctx)
             .await
             .map_err(|e| AgentError::ToolExecutionError(e.to_string()))
     }
@@ -433,7 +419,7 @@ impl AgentLoop {
     }
 
     /// Runs the agent loop continuously, processing messages from the chat hub
-    /// 
+    ///
     /// This method is designed to run as a background task and will:
     /// - Listen for inbound messages from ChatHub
     /// - Process each message through the agent loop
@@ -442,14 +428,14 @@ impl AgentLoop {
     pub async fn run(&self) -> Result<()> {
         let mut shutdown_signal = std::pin::pin!(tokio::signal::ctrl_c());
         let _inbound_sender = self.chat_hub.inbound_sender();
-        
+
         // TODO: In future iterations, we need access to ChatHub's inbound receiver
         // For now, this demonstrates the structure. The actual implementation would:
         // 1. Get mutable access to ChatHub's inbound_rx
         // 2. Loop with tokio::select! listening on both inbound messages and shutdown
         // 3. Call process_message() for each inbound message
         // 4. Send response via chat_hub.outbound_sender()
-        
+
         tracing::info!("Agent loop started, waiting for messages");
 
         loop {
@@ -459,7 +445,7 @@ impl AgentLoop {
                     tracing::info!("Received shutdown signal, stopping agent loop");
                     break;
                 }
-                
+
                 // Note: Actual message handling would go here
                 _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
                     // Placeholder: In production, this would receive messages from inbound_rx
@@ -478,10 +464,10 @@ impl AgentLoop {
 mod tests {
     use super::*;
     use crate::providers::ProviderError;
-    
+
     // Mock implementations for testing
     struct MockLlmProvider;
-    
+
     #[async_trait::async_trait]
     impl LlmProvider for MockLlmProvider {
         async fn chat(
@@ -497,18 +483,18 @@ mod tests {
                 completion_tokens: None,
             })
         }
-        
+
         fn default_model(&self) -> String {
             "test-model".to_string()
         }
-        
+
         fn provider_name(&self) -> &'static str {
             "MockLlmProvider"
         }
     }
-    
+
     struct MockContextBuilder;
-    
+
     #[async_trait::async_trait]
     impl ContextBuilder for MockContextBuilder {
         async fn build_context(
@@ -519,17 +505,17 @@ mod tests {
             Ok(vec![])
         }
     }
-    
+
     #[test]
     fn test_agent_loop_creation() {
         let chat_hub = Arc::new(ChatHub::new());
         let llm_provider: Arc<dyn LlmProvider> = Arc::new(MockLlmProvider);
         let context_builder: Arc<dyn ContextBuilder> = Arc::new(MockContextBuilder);
         let tool_registry = Arc::new(ToolRegistry::new());
-        let session_manager = Arc::new(RwLock::new(SessionManager::new(
-            std::path::PathBuf::from("/tmp/sessions"),
-        )));
-        
+        let session_manager = Arc::new(RwLock::new(SessionManager::new(std::path::PathBuf::from(
+            "/tmp/sessions",
+        ))));
+
         let agent = AgentLoop::new(
             chat_hub,
             llm_provider,
@@ -537,21 +523,21 @@ mod tests {
             tool_registry,
             session_manager,
         );
-        
+
         assert_eq!(agent.max_iterations(), MAX_ITERATIONS);
         assert_eq!(agent.model(), "test-model");
     }
-    
+
     #[test]
     fn test_agent_loop_with_model_override() {
         let chat_hub = Arc::new(ChatHub::new());
         let llm_provider: Arc<dyn LlmProvider> = Arc::new(MockLlmProvider);
         let context_builder: Arc<dyn ContextBuilder> = Arc::new(MockContextBuilder);
         let tool_registry = Arc::new(ToolRegistry::new());
-        let session_manager = Arc::new(RwLock::new(SessionManager::new(
-            std::path::PathBuf::from("/tmp/sessions"),
-        )));
-        
+        let session_manager = Arc::new(RwLock::new(SessionManager::new(std::path::PathBuf::from(
+            "/tmp/sessions",
+        ))));
+
         let agent = AgentLoop::with_model(
             chat_hub,
             llm_provider,
@@ -560,15 +546,15 @@ mod tests {
             session_manager,
             "custom-model",
         );
-        
+
         assert_eq!(agent.model(), "custom-model");
     }
-    
+
     #[test]
     fn test_max_iterations_constant() {
         assert_eq!(MAX_ITERATIONS, 200);
     }
-    
+
     #[test]
     fn test_llm_role_as_str() {
         assert_eq!(LlmRole::System.as_str(), "system");
@@ -576,7 +562,7 @@ mod tests {
         assert_eq!(LlmRole::Assistant.as_str(), "assistant");
         assert_eq!(LlmRole::Tool.as_str(), "tool");
     }
-    
+
     #[test]
     fn test_llm_tool_call_creation() {
         let tool_call = LlmToolCall {
@@ -584,17 +570,17 @@ mod tests {
             name: "test_tool".to_string(),
             arguments: r#"{"key": "value"}"#.to_string(),
         };
-        
+
         assert_eq!(tool_call.id, "call_123");
         assert_eq!(tool_call.name, "test_tool");
         assert_eq!(tool_call.arguments, r#"{"key": "value"}"#);
     }
-    
+
     #[test]
     fn test_agent_error_display() {
         let err = AgentError::MaxIterationsReached(200);
         assert_eq!(err.to_string(), "Max iterations (200) reached");
-        
+
         let err = AgentError::ToolExecutionError("test error".to_string());
         assert_eq!(err.to_string(), "Tool execution failed: test error");
     }
@@ -604,19 +590,19 @@ mod tests {
     fn test_session_lifecycle_message_ordering() {
         // Test that messages are added in correct order
         let mut session = Session::new("telegram".to_string(), "123".to_string());
-        
+
         // Add user message
         session.add_message(crate::session::Message::new(
             "user".to_string(),
             "Hello".to_string(),
         ));
-        
+
         // Add assistant message
         session.add_message(crate::session::Message::new(
             "assistant".to_string(),
             "Hi there".to_string(),
         ));
-        
+
         assert_eq!(session.messages.len(), 2);
         assert_eq!(session.messages[0].role, "user");
         assert_eq!(session.messages[1].role, "assistant");
@@ -625,44 +611,48 @@ mod tests {
     #[test]
     fn test_session_with_tool_calls() {
         let mut session = Session::new("telegram".to_string(), "123".to_string());
-        
+
         // Add user message
         session.add_message(crate::session::Message::new(
             "user".to_string(),
             "List files".to_string(),
         ));
-        
+
         // Add assistant message with tool calls
         let tool_calls = vec![crate::session::ToolCall {
             id: "call_1".to_string(),
             name: "filesystem".to_string(),
             arguments: "{\"operation\": \"list\", \"path\": \"/tmp\"}".to_string(),
         }];
-        
+
         let assistant_msg = crate::session::Message::new(
             "assistant".to_string(),
             "I'll list the files for you.".to_string(),
-        ).with_tool_calls(tool_calls);
-        
+        )
+        .with_tool_calls(tool_calls);
+
         session.add_message(assistant_msg);
-        
+
         // Verify assistant message has tool_calls
         assert_eq!(session.messages.len(), 2);
         assert_eq!(session.messages[1].role, "assistant");
         assert!(session.messages[1].tool_calls.is_some());
         assert_eq!(session.messages[1].tool_calls.as_ref().unwrap().len(), 1);
-        assert_eq!(session.messages[1].tool_calls.as_ref().unwrap()[0].name, "filesystem");
+        assert_eq!(
+            session.messages[1].tool_calls.as_ref().unwrap()[0].name,
+            "filesystem"
+        );
     }
 
     #[test]
     fn test_session_tool_result_messages() {
         let mut session = Session::new("telegram".to_string(), "123".to_string());
-        
+
         // Add tool result message
         session.add_message(crate::session::Message::tool_result(
             "Tool call_1 result: file1.txt, file2.txt".to_string(),
         ));
-        
+
         assert_eq!(session.messages.len(), 1);
         assert_eq!(session.messages[0].role, "tool_result");
         assert!(session.messages[0].content.contains("file1.txt"));
@@ -671,49 +661,55 @@ mod tests {
     #[test]
     fn test_session_complete_tool_interaction_flow() {
         let mut session = Session::new("telegram".to_string(), "123".to_string());
-        
+
         // Complete flow: user -> assistant (with tool_calls) -> tool_result
         session.add_message(crate::session::Message::new(
             "user".to_string(),
             "What's the weather?".to_string(),
         ));
-        
+
         let tool_calls = vec![crate::session::ToolCall {
             id: "call_weather_1".to_string(),
             name: "weather".to_string(),
             arguments: "{\"city\": \"Paris\"}".to_string(),
         }];
-        
-        session.add_message(crate::session::Message::new(
-            "assistant".to_string(),
-            "Let me check the weather.".to_string(),
-        ).with_tool_calls(tool_calls));
-        
+
+        session.add_message(
+            crate::session::Message::new(
+                "assistant".to_string(),
+                "Let me check the weather.".to_string(),
+            )
+            .with_tool_calls(tool_calls),
+        );
+
         session.add_message(crate::session::Message::tool_result(
             "Tool call_weather_1 result: Sunny, 25°C".to_string(),
         ));
-        
+
         session.add_message(crate::session::Message::new(
             "assistant".to_string(),
             "It's sunny and 25°C in Paris.".to_string(),
         ));
-        
+
         assert_eq!(session.messages.len(), 4);
         assert_eq!(session.messages[0].role, "user");
         assert_eq!(session.messages[1].role, "assistant");
         assert_eq!(session.messages[2].role, "tool_result");
         assert_eq!(session.messages[3].role, "assistant");
-        
+
         // Verify tool_calls preserved
         assert!(session.messages[1].tool_calls.is_some());
-        assert_eq!(session.messages[1].tool_calls.as_ref().unwrap()[0].id, "call_weather_1");
+        assert_eq!(
+            session.messages[1].tool_calls.as_ref().unwrap()[0].id,
+            "call_weather_1"
+        );
     }
 
     #[test]
     fn test_session_fifo_with_tool_interactions() {
         // Test that FIFO works correctly with tool interaction messages
         let mut session = Session::new("telegram".to_string(), "123".to_string());
-        
+
         // Add 50 messages with tool interactions
         for i in 0..25 {
             // User message
@@ -721,22 +717,22 @@ mod tests {
                 "user".to_string(),
                 format!("Message {}", i),
             ));
-            
+
             // Assistant message
             session.add_message(crate::session::Message::new(
                 "assistant".to_string(),
                 format!("Response {}", i),
             ));
         }
-        
+
         assert_eq!(session.messages.len(), 50);
-        
+
         // Add one more message (should trigger FIFO)
         session.add_message(crate::session::Message::new(
             "user".to_string(),
             "Overflow message".to_string(),
         ));
-        
+
         // Should still be 50, with oldest removed (Message 0 was removed)
         assert_eq!(session.messages.len(), 50);
         assert_eq!(session.messages[0].content, "Response 0"); // First message (Message 0) was removed, now starts with Response 0
@@ -745,26 +741,19 @@ mod tests {
 
     #[test]
     fn test_message_is_user_assistant_tool_result_helpers() {
-        let user_msg = crate::session::Message::new(
-            "user".to_string(),
-            "Hello".to_string(),
-        );
+        let user_msg = crate::session::Message::new("user".to_string(), "Hello".to_string());
         assert!(user_msg.is_user());
         assert!(!user_msg.is_assistant());
         assert!(!user_msg.is_tool_result());
-        
-        let assistant_msg = crate::session::Message::new(
-            "assistant".to_string(),
-            "Hi".to_string(),
-        );
+
+        let assistant_msg = crate::session::Message::new("assistant".to_string(), "Hi".to_string());
         assert!(!assistant_msg.is_user());
         assert!(assistant_msg.is_assistant());
         assert!(!assistant_msg.is_tool_result());
-        
+
         let tool_result_msg = crate::session::Message::tool_result("Result".to_string());
         assert!(!tool_result_msg.is_user());
         assert!(!tool_result_msg.is_assistant());
         assert!(tool_result_msg.is_tool_result());
     }
 }
-

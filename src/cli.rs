@@ -1,7 +1,7 @@
 use anyhow::Context;
 use clap::{CommandFactory, Parser, Subcommand};
 
-use crate::config::{load_config, run_onboarding, Config};
+use crate::config::{Config, load_config, run_onboarding};
 
 #[derive(Parser)]
 #[command(name = "miniclaw")]

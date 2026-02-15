@@ -1,4 +1,4 @@
-use crate::config::{save_config, Config};
+use crate::config::{Config, save_config};
 use crate::workspace;
 use anyhow::{Context, Result};
 use inquire::Confirm;

@@ -1,10 +1,10 @@
-use thiserror::Error;
-use tokio::sync::mpsc;
-use std::sync::Arc;
-use tokio::sync::RwLock;
-use std::collections::HashMap;
-use std::time::Duration;
 use crate::chat::types::{InboundMessage, OutboundMessage};
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::Duration;
+use thiserror::Error;
+use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 
 const MAX_RETRIES: u32 = 3;
 const INITIAL_RETRY_DELAY_MS: u64 = 100;
@@ -54,15 +54,15 @@ impl ChatHub {
     }
 
     /// Register a callback to be notified when message delivery fails
-    pub fn on_delivery_failure(&mut self, callback: impl Fn(String, OutboundMessage) + Send + Sync + 'static) {
+    pub fn on_delivery_failure(
+        &mut self,
+        callback: impl Fn(String, OutboundMessage) + Send + Sync + 'static,
+    ) {
         self.delivery_failure_callback = Some(Arc::new(callback));
     }
 
     /// Notify agent of delivery failure
-    async fn notify_delivery_failure(&self,
-        error: String,
-        message: OutboundMessage,
-    ) {
+    async fn notify_delivery_failure(&self, error: String, message: OutboundMessage) {
         if let Some(callback) = &self.delivery_failure_callback {
             callback(error, message);
         }
@@ -76,7 +76,8 @@ impl ChatHub {
         self.outbound_tx.clone()
     }
 
-    pub async fn register_channel(&self,
+    pub async fn register_channel(
+        &self,
         name: impl Into<String>,
         sender: mpsc::Sender<OutboundMessage>,
     ) -> Result<()> {
@@ -118,7 +119,7 @@ impl ChatHub {
                 // AC 4: Wait briefly for space before dropping
                 tracing::warn!("Outbound buffer full, waiting briefly for space");
                 tokio::time::sleep(Duration::from_millis(BUFFER_WAIT_MS)).await;
-                
+
                 // Try again after waiting
                 match self.outbound_tx.try_send(msg) {
                     Ok(_) => return Ok(()),
@@ -168,7 +169,7 @@ impl ChatHub {
             // AC 2 & 3: Retry with exponential backoff
             let mut retry_count = 0;
             let mut delay_ms = INITIAL_RETRY_DELAY_MS;
-            
+
             loop {
                 match sender.try_send(message.clone()) {
                     Ok(_) => return Ok(()),
@@ -183,12 +184,14 @@ impl ChatHub {
                         retry_count += 1;
                     }
                     Err(e) => {
-                        let error_msg = format!("Failed to send after {} retries: {}", retry_count, e);
+                        let error_msg =
+                            format!("Failed to send after {} retries: {}", retry_count, e);
                         tracing::error!(error = %error_msg, "Message delivery failed");
-                        
+
                         // AC 3: Notify agent of delivery failure
-                        self.notify_delivery_failure(error_msg.clone(), message).await;
-                        
+                        self.notify_delivery_failure(error_msg.clone(), message)
+                            .await;
+
                         return Err(ChatError::SendError(error_msg));
                     }
                 }
@@ -196,10 +199,11 @@ impl ChatHub {
         } else {
             let error_msg = format!("Channel not found: {}", message.channel);
             tracing::error!(error = %error_msg);
-            
+
             // AC 3: Notify agent of delivery failure
-            self.notify_delivery_failure(error_msg.clone(), message).await;
-            
+            self.notify_delivery_failure(error_msg.clone(), message)
+                .await;
+
             Err(ChatError::ChannelNotFound(error_msg))
         }
     }
@@ -320,7 +324,7 @@ mod tests {
     async fn test_channel_registration() {
         let hub = ChatHub::new();
         let (tx, _rx) = mpsc::channel(10);
-        
+
         hub.register_channel("test", tx).await.unwrap();
     }
 
@@ -328,7 +332,7 @@ mod tests {
     async fn test_send_inbound() {
         let hub = ChatHub::new();
         let msg = InboundMessage::new("telegram", "123", "Test message");
-        
+
         hub.send_inbound(msg).await.unwrap();
     }
 
@@ -336,12 +340,12 @@ mod tests {
     async fn test_route_outbound() {
         let hub = ChatHub::new();
         let (tx, mut rx) = mpsc::channel(10);
-        
+
         hub.register_channel("telegram", tx).await.unwrap();
-        
+
         let msg = OutboundMessage::new("telegram", "123", "Test reply");
         hub.route_outbound(msg).await.unwrap();
-        
+
         let received = rx.recv().await.unwrap();
         assert_eq!(received.content, "Test reply");
     }
@@ -350,7 +354,7 @@ mod tests {
     async fn test_route_outbound_unregistered_channel() {
         let hub = ChatHub::new();
         let msg = OutboundMessage::new("unknown", "123", "Test reply");
-        
+
         let result = hub.route_outbound(msg).await;
         assert!(matches!(result, Err(ChatError::ChannelNotFound(_))));
     }
@@ -358,15 +362,19 @@ mod tests {
     #[tokio::test]
     async fn test_buffer_overflow_inbound() {
         let hub = ChatHub::new();
-        
+
         // Fill the buffer (capacity 100)
         for i in 0..100 {
-            hub.send_inbound(InboundMessage::new("test", "123", format!("msg {}", i))).await.unwrap();
+            hub.send_inbound(InboundMessage::new("test", "123", format!("msg {}", i)))
+                .await
+                .unwrap();
         }
-        
+
         // Send one more - should trigger overflow logic
-        hub.send_inbound(InboundMessage::new("test", "123", "overflow")).await.unwrap();
-        
+        hub.send_inbound(InboundMessage::new("test", "123", "overflow"))
+            .await
+            .unwrap();
+
         // Check that we can still receive
         let mut rx = hub.inbound_rx.write().await;
         let msg1 = rx.recv().await.unwrap();
@@ -377,7 +385,7 @@ mod tests {
     #[tokio::test]
     async fn test_simple_send_receive() {
         let hub = ChatHub::new();
-        
+
         // Simple send should work
         let msg = InboundMessage::new("telegram", "123", "Test message");
         hub.send_inbound(msg).await.unwrap();
@@ -386,13 +394,17 @@ mod tests {
     #[tokio::test]
     async fn test_inbound_ignoring_whitespace() {
         let hub = ChatHub::new();
-        
+
         // Send whitespace message
-        hub.send_inbound(InboundMessage::new("test", "123", "   ")).await.unwrap();
-        
+        hub.send_inbound(InboundMessage::new("test", "123", "   "))
+            .await
+            .unwrap();
+
         // Send valid message
-        hub.send_inbound(InboundMessage::new("test", "123", "valid")).await.unwrap();
-        
+        hub.send_inbound(InboundMessage::new("test", "123", "valid"))
+            .await
+            .unwrap();
+
         let mut rx = hub.inbound_rx.write().await;
         let received = rx.try_recv().unwrap();
         assert_eq!(received.content, "valid");
@@ -403,7 +415,7 @@ mod tests {
     async fn test_reply_helpers() {
         let hub = ChatHub::new();
         hub.reply("telegram", "123", "Hello").await.unwrap();
-        
+
         let mut rx = hub.outbound_rx.write().await;
         let msg = rx.try_recv().unwrap();
         assert_eq!(msg.content, "Hello");
@@ -413,8 +425,10 @@ mod tests {
     #[tokio::test]
     async fn test_reply_to_helper() {
         let hub = ChatHub::new();
-        hub.reply_to("telegram", "123", "Reply", "mid_456").await.unwrap();
-        
+        hub.reply_to("telegram", "123", "Reply", "mid_456")
+            .await
+            .unwrap();
+
         let mut rx = hub.outbound_rx.write().await;
         let msg = rx.try_recv().unwrap();
         assert_eq!(msg.content, "Reply");
@@ -424,15 +438,19 @@ mod tests {
     #[tokio::test]
     async fn test_buffer_overflow_outbound() {
         let hub = ChatHub::new();
-        
+
         // Fill the buffer (capacity 100)
         for i in 0..100 {
-            hub.send_outbound(OutboundMessage::new("test", "123", format!("msg {}", i))).await.unwrap();
+            hub.send_outbound(OutboundMessage::new("test", "123", format!("msg {}", i)))
+                .await
+                .unwrap();
         }
-        
+
         // Send one more - should trigger overflow logic (wait briefly, then drop oldest)
-        hub.send_outbound(OutboundMessage::new("test", "123", "overflow")).await.unwrap();
-        
+        hub.send_outbound(OutboundMessage::new("test", "123", "overflow"))
+            .await
+            .unwrap();
+
         // Check that we can still receive
         let mut rx = hub.outbound_rx.write().await;
         let msg1 = rx.recv().await.unwrap();
@@ -443,23 +461,26 @@ mod tests {
     #[tokio::test]
     async fn test_delivery_failure_notification() {
         use std::sync::atomic::{AtomicBool, Ordering};
-        
+
         let mut hub = ChatHub::new();
         let notification_received = Arc::new(AtomicBool::new(false));
         let notification_received_clone = notification_received.clone();
-        
+
         // Register a delivery failure callback
         hub.on_delivery_failure(move |_error: String, _msg: OutboundMessage| {
             notification_received_clone.store(true, Ordering::SeqCst);
         });
-        
+
         // Try to route to unregistered channel - should trigger failure notification
         let msg = OutboundMessage::new("unknown", "123", "Test");
         let result = hub.route_outbound(msg).await;
-        
+
         assert!(result.is_err());
         // Give async callback time to execute
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert!(notification_received.load(Ordering::SeqCst), "Delivery failure notification should have been received");
+        assert!(
+            notification_received.load(Ordering::SeqCst),
+            "Delivery failure notification should have been received"
+        );
     }
 }

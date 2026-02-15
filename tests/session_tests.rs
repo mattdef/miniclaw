@@ -6,17 +6,23 @@ use tempfile::TempDir;
 async fn test_session_manager_integration() {
     let temp_dir = TempDir::new().unwrap();
     let sessions_dir = temp_dir.path().to_path_buf();
-    
+
     let manager = SessionManager::new(sessions_dir.clone());
     manager.initialize().await.unwrap();
 
     // Create session
-    let session = manager.get_or_create_session("telegram", "user123").await.unwrap();
+    let session = manager
+        .get_or_create_session("telegram", "user123")
+        .await
+        .unwrap();
     assert_eq!(session.session_id, "telegram_user123");
 
     // Add message
     let message = Message::new("user".to_string(), "Hello integration test".to_string());
-    manager.add_message(&session.session_id, message).await.unwrap();
+    manager
+        .add_message(&session.session_id, message)
+        .await
+        .unwrap();
 
     // Verify in memory
     let session = manager.get_session("telegram_user123").await.unwrap();
@@ -48,7 +54,10 @@ async fn test_corrupted_session_recovery_integration() {
     manager.initialize().await.unwrap();
 
     // Try to get the corrupted session
-    let session = manager.get_or_create_session("telegram", "bad").await.unwrap();
+    let session = manager
+        .get_or_create_session("telegram", "bad")
+        .await
+        .unwrap();
     assert_eq!(session.session_id, "telegram_bad");
     assert!(session.messages.is_empty());
 

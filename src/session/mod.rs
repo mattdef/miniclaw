@@ -2,6 +2,6 @@ mod manager;
 mod persistence;
 mod types;
 
-pub use manager::{SessionManager, PERSISTENCE_INTERVAL_SECS};
+pub use manager::{PERSISTENCE_INTERVAL_SECS, SessionManager};
 pub use persistence::Persistence;
-pub use types::{Message, Session, ToolCall, MAX_MESSAGES};
+pub use types::{MAX_MESSAGES, Message, Session, ToolCall};

@@ -192,18 +192,26 @@ impl From<serde_json::Error> for ProviderError {
     }
 }
 
-// TODO: Add From<reqwest::Error> implementation when reqwest is added in Story 4.2
-// impl From<reqwest::Error> for ProviderError {
-//     fn from(err: reqwest::Error) -> Self {
-//         if err.is_timeout() {
-//             Self::Timeout { seconds: 30 }
-//         } else if err.is_connect() {
-//             Self::Network { message: err.to_string() }
-//         } else {
-//             Self::Network { message: err.to_string() }
-//         }
-//     }
-// }
+impl From<reqwest::Error> for ProviderError {
+    fn from(err: reqwest::Error) -> Self {
+        if err.is_timeout() {
+            Self::Timeout { seconds: 30 }
+        } else if err.is_connect() {
+            Self::Network {
+                message: err.to_string(),
+            }
+        } else if err.is_status() {
+            // HTTP status error - will be handled separately in the provider
+            Self::Network {
+                message: err.to_string(),
+            }
+        } else {
+            Self::Network {
+                message: err.to_string(),
+            }
+        }
+    }
+}
 
 /// Result type for provider operations
 pub type Result<T> = std::result::Result<T, ProviderError>;
