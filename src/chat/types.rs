@@ -50,7 +50,8 @@ impl InboundMessage {
                 "Message too long, truncating to {}",
                 MAX_CONTENT_LENGTH
             );
-            self.content = trimmed[..MAX_CONTENT_LENGTH].to_string();
+            // Truncate safely on UTF-8 character boundaries.
+            self.content = trimmed.chars().take(MAX_CONTENT_LENGTH).collect();
         } else if trimmed.len() != self.content.len() {
             self.content = trimmed.to_string();
         }

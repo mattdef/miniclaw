@@ -36,9 +36,13 @@ pub struct ChatHub {
 
 impl ChatHub {
     pub fn new() -> Self {
-        let (inbound_tx, inbound_rx) = mpsc::channel(100);
-        let (outbound_tx, outbound_rx) = mpsc::channel(100);
-        
+        Self::with_capacities(100, 100)
+    }
+
+    pub fn with_capacities(inbound_capacity: usize, outbound_capacity: usize) -> Self {
+        let (inbound_tx, inbound_rx) = mpsc::channel(inbound_capacity);
+        let (outbound_tx, outbound_rx) = mpsc::channel(outbound_capacity);
+
         Self {
             inbound_tx,
             inbound_rx: Arc::new(RwLock::new(inbound_rx)),
@@ -268,6 +272,30 @@ impl ChatHub {
     async fn recv_outbound(&self) -> Option<OutboundMessage> {
         let mut rx = self.outbound_rx.write().await;
         rx.recv().await
+    }
+
+    /// Attempts to enqueue an outbound message without awaiting.
+    /// If the buffer is full, drops the oldest message and retries once.
+    pub fn try_send_outbound(&self, message: OutboundMessage) -> Result<()> {
+        match self.outbound_tx.try_send(message) {
+            Ok(()) => Ok(()),
+            Err(mpsc::error::TrySendError::Full(msg)) => {
+                tracing::warn!("Outbound buffer full, dropping oldest message");
+                if let Ok(mut rx) = self.outbound_rx.try_write() {
+                    let _ = rx.try_recv();
+                }
+                self.outbound_tx
+                    .try_send(msg)
+                    .map_err(|e| ChatError::SendError(e.to_string()))
+            }
+            Err(e) => Err(ChatError::SendError(e.to_string())),
+        }
+    }
+
+    #[cfg(test)]
+    pub async fn test_try_recv_outbound(&self) -> Option<OutboundMessage> {
+        let mut rx = self.outbound_rx.write().await;
+        rx.try_recv().ok()
     }
 }
 

@@ -6,6 +6,12 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use thiserror::Error;
 
+#[cfg(test)]
+use std::sync::Mutex;
+
+#[cfg(test)]
+static CONFIG_TEST_ENV_LOCK: Mutex<()> = Mutex::new(());
+
 #[derive(Error, Debug)]
 pub enum ConfigError {
     #[error("Configuration file contains invalid JSON: {0}")]
@@ -138,6 +144,7 @@ mod tests {
 
     #[test]
     fn test_load_config_defaults() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         // Clear any environment variables that could interfere
         unsafe {
             env::remove_var("OPENROUTER_API_KEY");
@@ -155,6 +162,7 @@ mod tests {
 
     #[test]
     fn test_load_config_from_file() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = setup();
         let config_path = temp_dir.path().join("config.json");
 
@@ -183,6 +191,7 @@ mod tests {
 
     #[test]
     fn test_load_config_invalid_json() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = setup();
         let config_path = temp_dir.path().join("config.json");
 
@@ -199,6 +208,7 @@ mod tests {
 
     #[test]
     fn test_env_variable_override() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = setup();
         let config_path = temp_dir.path().join("config.json");
 
@@ -234,6 +244,7 @@ mod tests {
 
     #[test]
     fn test_cli_flag_override() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = setup();
         let config_path = temp_dir.path().join("config.json");
 
@@ -272,6 +283,7 @@ mod tests {
 
     #[test]
     fn test_config_hierarchy_precedence() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = setup();
         let config_path = temp_dir.path().join("config.json");
 
@@ -312,6 +324,7 @@ mod tests {
 
     #[test]
     fn test_save_config_permissions() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         let temp_dir = setup();
         let config_path = temp_dir.path().join("config.json");
 
@@ -327,6 +340,7 @@ mod tests {
 
     #[test]
     fn test_telegram_whitelist_env() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         unsafe {
             env::set_var("MINICLAW_TELEGRAM_WHITELIST", "user1, user2, user3");
         }
@@ -349,6 +363,7 @@ mod tests {
 
     #[test]
     fn test_get_config_path() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         let path = get_config_path();
         assert!(path.is_some());
         let path = path.unwrap();

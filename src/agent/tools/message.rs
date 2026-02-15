@@ -1,8 +1,10 @@
-use crate::agent::tools::{Tool, ToolError, Result};
+use crate::agent::tools::{Result, Tool, ToolError};
+use crate::agent::tools::ToolExecutionContext;
+use crate::chat::ChatHub;
 use crate::chat::types::OutboundMessage;
 use serde_json::Value;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+use std::sync::Arc;
 
 /// Tool for sending messages programmatically to users
 /// 
@@ -10,8 +12,8 @@ use tokio::sync::mpsc;
 /// outbound channel. It supports specifying the target chat_id, message content,
 /// and optionally the channel to use.
 pub struct MessageTool {
-    /// Sender for the outbound message channel
-    outbound_tx: mpsc::Sender<OutboundMessage>,
+    /// Chat hub used to enqueue outbound messages
+    hub: Arc<ChatHub>,
     /// Default channel to use when not specified in the call
     default_channel: String,
 }
@@ -20,21 +22,34 @@ impl MessageTool {
     /// Creates a new MessageTool instance
     /// 
     /// # Arguments
-    /// * `outbound_tx` - The sender for the ChatHub outbound channel
+    /// * `hub` - The ChatHub used to enqueue outbound messages
     /// * `default_channel` - The default channel identifier (e.g., "telegram")
-    pub fn new(outbound_tx: mpsc::Sender<OutboundMessage>, default_channel: impl Into<String>) -> Self {
+    pub fn new(hub: Arc<ChatHub>, default_channel: impl Into<String>) -> Self {
         Self {
-            outbound_tx,
+            hub,
             default_channel: default_channel.into(),
         }
     }
     
     /// Validates a chat_id to ensure it's not empty
     fn validate_chat_id(chat_id: &str) -> Result<()> {
-        if chat_id.trim().is_empty() {
+        let trimmed = chat_id.trim();
+        if trimmed.is_empty() {
             return Err(ToolError::InvalidArguments {
                 tool: "message".to_string(),
                 message: "chat_id cannot be empty".to_string(),
+            });
+        }
+        if trimmed.len() > 128 {
+            return Err(ToolError::InvalidArguments {
+                tool: "message".to_string(),
+                message: "chat_id is too long".to_string(),
+            });
+        }
+        if trimmed != chat_id {
+            return Err(ToolError::InvalidArguments {
+                tool: "message".to_string(),
+                message: "chat_id must not contain leading or trailing whitespace".to_string(),
             });
         }
         Ok(())
@@ -85,7 +100,11 @@ impl Tool for MessageTool {
         })
     }
     
-    async fn execute(&self, args: HashMap<String, Value>) -> Result<String> {
+    async fn execute(
+        &self,
+        args: HashMap<String, Value>,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String> {
         // Extract required parameters
         let chat_id = args
             .get("chat_id")
@@ -107,12 +126,13 @@ impl Tool for MessageTool {
         Self::validate_chat_id(chat_id)?;
         Self::validate_content(content)?;
         
-        // Resolve channel: use provided or fall back to default
+        // Resolve channel: args > conversation context > tool default
         let channel = args
             .get("channel")
             .and_then(|v| v.as_str())
-            .unwrap_or(&self.default_channel)
-            .to_string();
+            .map(|s| s.to_string())
+            .or_else(|| ctx.channel.clone())
+            .unwrap_or_else(|| self.default_channel.clone());
         
         if channel.trim().is_empty() {
             return Err(ToolError::ExecutionFailed {
@@ -123,44 +143,22 @@ impl Tool for MessageTool {
         
         // Create the outbound message
         let message = OutboundMessage::new(&channel, chat_id, content);
-        
-        // Send to ChatHub outbound channel (non-blocking)
-        match self.outbound_tx.try_send(message) {
-            Ok(_) => {
+
+        // Enqueue to ChatHub outbound buffer (non-blocking)
+        match self.hub.try_send_outbound(message) {
+            Ok(()) => {
                 tracing::info!(
                     tool = "message",
                     chat_id = %chat_id,
                     channel = %channel,
                     "Message queued for delivery"
                 );
-                
-                // AC 5: Return immediately (non-blocking)
                 Ok(format!("Message queued for delivery to {} via {}", chat_id, channel))
             }
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                // Full outbound buffer - this is recoverable
-                tracing::warn!(
-                    tool = "message",
-                    "Outbound buffer full, message could not be queued"
-                );
-                
-                Err(ToolError::ExecutionFailed {
-                    tool: "message".to_string(),
-                    message: "Outbound buffer full, try again later".to_string(),
-                })
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                // Channel closed - not recoverable
-                tracing::error!(
-                    tool = "message",
-                    "Outbound channel closed"
-                );
-                
-                Err(ToolError::ExecutionFailed {
-                    tool: "message".to_string(),
-                    message: "ChatHub is not available".to_string(),
-                })
-            }
+            Err(e) => Err(ToolError::ExecutionFailedRecoverable {
+                tool: "message".to_string(),
+                message: e.to_string(),
+            }),
         }
     }
 }
@@ -168,23 +166,26 @@ impl Tool for MessageTool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chat::types::OutboundMessage;
+    use tokio::time::Duration;
     
-    fn create_test_tool() -> (MessageTool, mpsc::Receiver<OutboundMessage>) {
-        let (tx, rx) = mpsc::channel(100);
-        let tool = MessageTool::new(tx, "telegram");
-        (tool, rx)
+    fn create_test_tool() -> (MessageTool, Arc<ChatHub>) {
+        let hub = Arc::new(ChatHub::with_capacities(100, 10));
+        (MessageTool::new(Arc::clone(&hub), "telegram"), hub)
+    }
+
+    fn empty_ctx() -> ToolExecutionContext {
+        ToolExecutionContext::default()
     }
     
     #[test]
     fn test_message_tool_name() {
-        let (tool, _rx) = create_test_tool();
+        let (tool, _hub) = create_test_tool();
         assert_eq!(tool.name(), "message");
     }
     
     #[test]
     fn test_message_tool_description() {
-        let (tool, _rx) = create_test_tool();
+        let (tool, _hub) = create_test_tool();
         let desc = tool.description();
         assert!(desc.contains("Send a message"));
         assert!(desc.contains("chat_id"));
@@ -193,7 +194,7 @@ mod tests {
     
     #[test]
     fn test_message_tool_parameters_schema() {
-        let (tool, _rx) = create_test_tool();
+        let (tool, _hub) = create_test_tool();
         let params = tool.parameters();
         
         assert_eq!(params["type"], "object");
@@ -208,18 +209,17 @@ mod tests {
     
     #[tokio::test]
     async fn test_execute_basic_message() {
-        let (tool, mut rx) = create_test_tool();
+        let (tool, hub) = create_test_tool();
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("123456"));
         args.insert("content".to_string(), serde_json::json!("Hello!"));
         
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &empty_ctx()).await;
         
         assert!(result.is_ok());
         assert!(result.unwrap().contains("queued for delivery"));
-        
-        // Verify message was sent to channel
-        let msg = rx.try_recv().unwrap();
+
+        let msg = hub.test_try_recv_outbound().await.unwrap();
         assert_eq!(msg.chat_id, "123456");
         assert_eq!(msg.content, "Hello!");
         assert_eq!(msg.channel, "telegram");
@@ -227,28 +227,28 @@ mod tests {
     
     #[tokio::test]
     async fn test_execute_with_custom_channel() {
-        let (tool, mut rx) = create_test_tool();
+        let (tool, hub) = create_test_tool();
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("789"));
         args.insert("content".to_string(), serde_json::json!("Test"));
         args.insert("channel".to_string(), serde_json::json!("discord"));
         
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &empty_ctx()).await;
         
         assert!(result.is_ok());
-        
-        let msg = rx.try_recv().unwrap();
+
+        let msg = hub.test_try_recv_outbound().await.unwrap();
         assert_eq!(msg.channel, "discord");
         assert_eq!(msg.chat_id, "789");
     }
     
     #[tokio::test]
     async fn test_execute_missing_chat_id() {
-        let (tool, _rx) = create_test_tool();
+        let (tool, _hub) = create_test_tool();
         let mut args = HashMap::new();
         args.insert("content".to_string(), serde_json::json!("Hello!"));
         
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &empty_ctx()).await;
         
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -262,11 +262,11 @@ mod tests {
     
     #[tokio::test]
     async fn test_execute_missing_content() {
-        let (tool, _rx) = create_test_tool();
+        let (tool, _hub) = create_test_tool();
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("123"));
         
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &empty_ctx()).await;
         
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -280,12 +280,12 @@ mod tests {
     
     #[tokio::test]
     async fn test_execute_empty_chat_id() {
-        let (tool, _rx) = create_test_tool();
+        let (tool, _hub) = create_test_tool();
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("   "));
         args.insert("content".to_string(), serde_json::json!("Hello!"));
         
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &empty_ctx()).await;
         
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -298,12 +298,12 @@ mod tests {
     
     #[tokio::test]
     async fn test_execute_empty_content() {
-        let (tool, _rx) = create_test_tool();
+        let (tool, _hub) = create_test_tool();
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("123"));
         args.insert("content".to_string(), serde_json::json!(""));
         
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &empty_ctx()).await;
         
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -316,81 +316,69 @@ mod tests {
     
     #[tokio::test]
     async fn test_execute_non_blocking() {
-        let (tool, _rx) = create_test_tool();
+        let (tool, _hub) = create_test_tool();
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("123"));
         args.insert("content".to_string(), serde_json::json!("Test"));
-        
-        // Execute should return immediately
-        let start = std::time::Instant::now();
-        let result = tool.execute(args).await;
-        let duration = start.elapsed();
-        
+
+        let ctx = empty_ctx();
+        let result = tokio::time::timeout(Duration::from_millis(20), tool.execute(args, &ctx)).await;
         assert!(result.is_ok());
-        // Should complete almost instantly (< 10ms)
-        assert!(duration < std::time::Duration::from_millis(10));
+        assert!(result.unwrap().is_ok());
     }
     
     #[tokio::test]
     async fn test_buffer_full_error() {
-        let (tx, _rx) = mpsc::channel(1); // Very small buffer
-        let tool = MessageTool::new(tx, "telegram");
+        let hub = Arc::new(ChatHub::with_capacities(10, 1)); // Very small buffer
+        let tool = MessageTool::new(Arc::clone(&hub), "telegram");
         
         // Fill the buffer
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("1"));
         args.insert("content".to_string(), serde_json::json!("First"));
-        tool.execute(args).await.unwrap();
+        tool.execute(args, &empty_ctx()).await.unwrap();
         
         // Try to send another (buffer full)
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("2"));
         args.insert("content".to_string(), serde_json::json!("Second"));
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &empty_ctx()).await;
         
         // This may or may not fail depending on timing
         // but it should never panic
         match result {
             Ok(_) => (), // Buffer was drained fast enough
-            Err(ToolError::ExecutionFailed { .. }) => (), // Buffer full
+            Err(ToolError::ExecutionFailedRecoverable { .. }) => (),
             Err(e) => panic!("Unexpected error: {:?}", e),
         }
     }
     
     #[tokio::test]
     async fn test_channel_closed_error() {
-        let (tx, rx) = mpsc::channel(10);
-        let tool = MessageTool::new(tx, "telegram");
-        
-        // Drop the receiver to close the channel
-        drop(rx);
+        let hub = Arc::new(ChatHub::with_capacities(10, 10));
+        let tool = MessageTool::new(Arc::clone(&hub), "telegram");
         
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("123"));
         args.insert("content".to_string(), serde_json::json!("Hello!"));
         
-        let result = tool.execute(args).await;
-        
-        assert!(result.is_err());
-        match result.unwrap_err() {
-            ToolError::ExecutionFailed { message, .. } => {
-                assert!(message.contains("not available"));
-            }
-            _ => panic!("Expected ExecutionFailed error for closed channel"),
-        }
+        // With the current ChatHub API, enqueueing can succeed even if no channel is registered.
+        // Delivery failure is handled asynchronously during routing.
+        let result = tool.execute(args, &empty_ctx()).await;
+        assert!(result.is_ok());
     }
     
     #[tokio::test]
     async fn test_no_default_channel() {
-        let (tx, _rx) = mpsc::channel(10);
-        let tool = MessageTool::new(tx, ""); // Empty default channel
+        let hub = Arc::new(ChatHub::with_capacities(10, 10));
+        let tool = MessageTool::new(hub, ""); // Empty default channel
         
         let mut args = HashMap::new();
         args.insert("chat_id".to_string(), serde_json::json!("123"));
         args.insert("content".to_string(), serde_json::json!("Hello!"));
         // No channel specified
         
-        let result = tool.execute(args).await;
+        let result = tool.execute(args, &empty_ctx()).await;
         
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -399,5 +387,25 @@ mod tests {
             }
             _ => panic!("Expected ExecutionFailed error for missing channel"),
         }
+    }
+
+    #[tokio::test]
+    async fn test_execute_uses_context_channel_when_missing() {
+        let hub = Arc::new(ChatHub::with_capacities(100, 10));
+        let tool = MessageTool::new(Arc::clone(&hub), "");
+        let ctx = ToolExecutionContext {
+            channel: Some("telegram".to_string()),
+            chat_id: Some("ctx-chat".to_string()),
+        };
+
+        let mut args = HashMap::new();
+        args.insert("chat_id".to_string(), serde_json::json!("123"));
+        args.insert("content".to_string(), serde_json::json!("Hello"));
+
+        let result = tool.execute(args, &ctx).await;
+        assert!(result.is_ok());
+
+        let msg = hub.test_try_recv_outbound().await.unwrap();
+        assert_eq!(msg.channel, "telegram");
     }
 }

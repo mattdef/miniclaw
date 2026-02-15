@@ -238,15 +238,16 @@ Launch a background task.
 Send a message through the configured channel (Telegram, etc.).
 
 **Parameters:**
-- `channel` (string, required): Channel identifier
+- `chat_id` (string, required): Target user identifier
 - `content` (string, required): Message content
+- `channel` (string, optional): Channel identifier (defaults to current context channel)
 
 **Example:**
 ```json
 {
   "tool": "message",
   "params": {
-    "channel": "telegram",
+    "chat_id": "123456789",
     "content": "Task completed successfully"
   }
 }

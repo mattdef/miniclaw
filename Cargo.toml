@@ -17,6 +17,7 @@ inquire = "0.9.3"
 chrono = { version = "0.4", features = ["serde"] }
 tokio = { version = "1", features = ["full"] }
 async-trait = "0.1"
+futures = { version = "0.3.32", features = ["async-await"] }
 
 [dev-dependencies]
 assert_cmd = "2"

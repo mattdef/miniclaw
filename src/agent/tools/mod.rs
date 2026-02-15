@@ -15,6 +15,9 @@ pub enum ToolError {
     
     #[error("Tool '{tool}' execution failed: {message}")]
     ExecutionFailed { tool: String, message: String },
+
+    #[error("Tool '{tool}' execution failed: {message}")]
+    ExecutionFailedRecoverable { tool: String, message: String },
     
     #[error("Permission denied for tool '{tool}': {message}")]
     PermissionDenied { tool: String, message: String },
@@ -26,7 +29,10 @@ pub enum ToolError {
 impl ToolError {
     /// Check if the error is recoverable (can be retried)
     pub fn is_recoverable(&self) -> bool {
-        matches!(self, ToolError::Timeout { .. })
+        matches!(
+            self,
+            ToolError::Timeout { .. } | ToolError::ExecutionFailedRecoverable { .. }
+        )
     }
     
     /// Get the tool name from the error
@@ -35,6 +41,7 @@ impl ToolError {
             ToolError::NotFound(name) => name,
             ToolError::InvalidArguments { tool, .. } => tool,
             ToolError::ExecutionFailed { tool, .. } => tool,
+            ToolError::ExecutionFailedRecoverable { tool, .. } => tool,
             ToolError::PermissionDenied { tool, .. } => tool,
             ToolError::Timeout { tool, .. } => tool,
         }
@@ -43,6 +50,14 @@ impl ToolError {
 
 /// Result type for tool operations
 pub type Result<T> = std::result::Result<T, ToolError>;
+
+#[derive(Debug, Clone, Default)]
+pub struct ToolExecutionContext {
+    /// Channel for the current conversation (e.g., "telegram")
+    pub channel: Option<String>,
+    /// Chat/user identifier for the current conversation
+    pub chat_id: Option<String>,
+}
 
 /// Trait for implementing tools that the agent can use
 #[async_trait::async_trait]
@@ -64,7 +79,11 @@ pub trait Tool: Send + Sync {
     /// # Returns
     /// * `Ok(String)` - The result of the tool execution as a string
     /// * `Err(ToolError)` - If execution fails
-    async fn execute(&self, args: HashMap<String, Value>) -> Result<String>;
+    async fn execute(
+        &self,
+        args: HashMap<String, Value>,
+        ctx: &ToolExecutionContext,
+    ) -> Result<String>;
 }
 
 /// Registry for managing available tools
@@ -78,6 +97,20 @@ impl ToolRegistry {
         Self {
             tools: HashMap::new(),
         }
+    }
+
+    pub fn with_default_tools(
+        hub: std::sync::Arc<crate::chat::ChatHub>,
+        default_channel: impl Into<String>,
+    ) -> Self {
+        let mut registry = Self::new();
+        registry
+            .register(Box::new(crate::agent::tools::message::MessageTool::new(
+                hub,
+                default_channel,
+            )))
+            .expect("default tool registration must succeed");
+        registry
     }
     
     /// Registers a tool in the registry
@@ -175,7 +208,11 @@ mod tests {
             })
         }
 
-        async fn execute(&self, args: HashMap<String, Value>) -> Result<String> {
+        async fn execute(
+            &self,
+            args: HashMap<String, Value>,
+            _ctx: &ToolExecutionContext,
+        ) -> Result<String> {
             let input = args
                 .get("input")
                 .and_then(|v| v.as_str())
@@ -251,7 +288,8 @@ mod tests {
         let mut args = HashMap::new();
         args.insert("input".to_string(), json!("hello"));
         
-        let result = tool.execute(args).await;
+        let ctx = ToolExecutionContext::default();
+        let result = tool.execute(args, &ctx).await;
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), "Processed: hello");
     }
@@ -261,7 +299,8 @@ mod tests {
         let tool = TestTool;
         let args = HashMap::new();
         
-        let result = tool.execute(args).await;
+        let ctx = ToolExecutionContext::default();
+        let result = tool.execute(args, &ctx).await;
         assert!(result.is_err());
         
         match result.unwrap_err() {
@@ -295,10 +334,16 @@ mod tests {
             duration: 30,
         };
         assert!(timeout_error.is_recoverable());
-        
+
+        let recoverable = ToolError::ExecutionFailedRecoverable {
+            tool: "test".to_string(),
+            message: "buffer full".to_string(),
+        };
+        assert!(recoverable.is_recoverable());
+         
         let not_found_error = ToolError::NotFound("test".to_string());
         assert!(!not_found_error.is_recoverable());
-        
+         
         let exec_error = ToolError::ExecutionFailed {
             tool: "test".to_string(),
             message: "failed".to_string(),
