@@ -1,5 +1,6 @@
 mod cli;
 mod config;
+mod session;
 mod skills;
 mod workspace;
 

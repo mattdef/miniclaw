@@ -168,8 +168,49 @@ pub fn initialize_workspace(base_path: &Path, verbose: bool) -> Result<()> {
     // Initialize skills directory (Story 2.4)
     crate::skills::initialize_skills_directory(&workspace_path, verbose)?;
 
+    // Initialize sessions directory (Story 2.5)
+    initialize_sessions_directory(&workspace_path, verbose)?;
+
     if verbose {
         tracing::info!("Workspace initialization complete");
+    }
+
+    Ok(())
+}
+
+/// Initialize the sessions directory for persistent session storage
+///
+/// Creates the sessions subdirectory within the workspace.
+///
+/// # Arguments
+/// * `workspace_path` - The workspace directory path
+/// * `verbose` - If true, prints progress information
+///
+/// # Returns
+/// * `Ok(())` - Directory created successfully
+/// * `Err` - If directory creation fails
+fn initialize_sessions_directory(workspace_path: &Path, verbose: bool) -> Result<()> {
+    let sessions_path = workspace_path.join("sessions");
+
+    if !sessions_path.exists() {
+        fs::create_dir_all(&sessions_path)
+            .map_err(|e| WorkspaceError::DirectoryCreationFailed(sessions_path.clone(), e))?;
+
+        // Set directory permissions on Unix systems
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let permissions = fs::Permissions::from_mode(0o755);
+            fs::set_permissions(&sessions_path, permissions).map_err(|e| {
+                WorkspaceError::PermissionError("sessions directory".to_string(), e)
+            })?;
+        }
+
+        if verbose {
+            tracing::info!(path = %sessions_path.display(), "Created sessions directory");
+        }
+    } else if verbose {
+        tracing::info!(path = %sessions_path.display(), "Sessions directory already exists");
     }
 
     Ok(())
