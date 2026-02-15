@@ -66,12 +66,12 @@ development_status:
   epic-3-retrospective: done
 
   # Epic 4: LLM Provider Integration
-  epic-4: in-progress
+  epic-4: done
   4-1-llm-provider-trait-and-architecture: done
   4-2-openai-compatible-provider: done
   4-3-ollama-local-provider: done
   4-4-agent-one-shot-command: done
-  epic-4-retrospective: optional
+  epic-4-retrospective: done
 
   # Epic 5: Agent Core - Loop & Context
   epic-5: done
