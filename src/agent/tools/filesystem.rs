@@ -10,35 +10,48 @@ use serde_json::Value;
 use tokio::fs;
 
 use crate::agent::tools::types::{Tool, ToolError, ToolExecutionContext, ToolResult};
+use crate::utils::paths::{validate_path, PathValidationError};
 
 /// Tool for filesystem operations
 ///
 /// Provides read, write, and list operations on files within a restricted
 /// base directory. All paths are validated to prevent path traversal attacks.
+///
+/// # Security
+/// This tool implements NFR-S3: All paths are canonicalized and validated
+/// using the centralized path validation utilities in `crate::utils::paths`.
 pub struct FilesystemTool {
-    /// The base directory that all operations are restricted to
+    /// The canonicalized base directory that all operations are restricted to
+    /// This is stored in canonical form for performance (no repeated canonicalization)
     base_dir: PathBuf,
 }
 
 impl FilesystemTool {
     /// Creates a new FilesystemTool with the specified base directory
     ///
+    /// The base directory is canonicalized once during construction and stored
+    /// for efficient reuse in path validation operations.
+    ///
     /// # Arguments
     /// * `base_dir` - The root directory that all filesystem operations are restricted to
+    ///
+    /// # Panics
+    /// Panics if the base directory cannot be canonicalized (doesn't exist or is inaccessible)
+    ///
+    /// # Note
+    /// For async construction, use `new_async()` instead
     pub fn new(base_dir: PathBuf) -> Self {
-        Self { base_dir }
+        // Canonicalize the base directory once for performance
+        // In production, this should be validated during app initialization
+        let canonical_base = std::fs::canonicalize(&base_dir)
+            .unwrap_or_else(|e| panic!("Failed to canonicalize base directory {:?}: {}", base_dir, e));
+        
+        Self {
+            base_dir: canonical_base,
+        }
     }
 
-    /// Validates and canonicalizes a user-provided path
-    ///
-    /// This method:
-    /// 1. Joins the user path with the base directory
-    /// 2. Canonicalizes to resolve symlinks and normalize
-    /// 3. Verifies the path is within the base directory
-    /// 4. Checks against blocked system paths
-    ///
-    /// For non-existent paths (write operations), canonicalizes the parent directory
-    /// and verifies the target path would be within bounds.
+    /// Validates a user-provided path using the centralized validation utilities
     ///
     /// # Arguments
     /// * `user_path` - The path provided by the user/agent
@@ -46,106 +59,29 @@ impl FilesystemTool {
     /// # Returns
     /// * `Ok(PathBuf)` - The canonicalized, validated path
     /// * `Err(ToolError)` - If path is invalid or outside allowed scope
-    async fn validate_path(&self, user_path: &str) -> ToolResult<PathBuf> {
-        // Join with base directory
-        let full_path = self.base_dir.join(user_path);
-
-        // Try to canonicalize the path (works if file/directory exists)
-        let canonical = match fs::canonicalize(&full_path).await {
-            Ok(path) => path,
-            Err(_) => {
-                // Path doesn't exist - for write operations, we need to validate differently
-                // Canonicalize the base directory first
-                let canonical_base = fs::canonicalize(&self.base_dir)
-                    .await
-                    .map_err(|e| ToolError::ExecutionFailed {
+    async fn validate_path_internal(&self, user_path: &str) -> ToolResult<PathBuf> {
+        validate_path(&self.base_dir, user_path)
+            .await
+            .map_err(|e| match e {
+                PathValidationError::OutsideBaseDirectory(path) => ToolError::PermissionDenied {
+                    tool: self.name().to_string(),
+                    message: format!("Path '{}' is outside the allowed base directory", path),
+                },
+                PathValidationError::SystemPathBlocked(path) => ToolError::PermissionDenied {
+                    tool: self.name().to_string(),
+                    message: format!("Access to system path '{}' is not allowed", path),
+                },
+                PathValidationError::CanonicalizationFailed { path, source } => {
+                    ToolError::ExecutionFailed {
                         tool: self.name().to_string(),
-                        message: format!("Cannot access base directory: {}", e),
-                    })?;
-
-                // Build the target path from canonical base + user path
-                // Clean the user path to prevent traversal
-                let cleaned_path = self.clean_path(user_path);
-                let target_path = canonical_base.join(&cleaned_path);
-
-                // Verify it's within base directory (prevents path traversal)
-                if !target_path.starts_with(&canonical_base) {
-                    return Err(ToolError::PermissionDenied {
-                        tool: self.name().to_string(),
-                        message: format!(
-                            "Path '{}' is outside the allowed workspace directory",
-                            user_path
-                        ),
-                    });
-                }
-
-                // Check against blocked system paths
-                if is_system_path(&target_path) {
-                    return Err(ToolError::PermissionDenied {
-                        tool: self.name().to_string(),
-                        message: format!(
-                            "Access to system path '{}' is not allowed",
-                            target_path.display()
-                        ),
-                    });
-                }
-
-                return Ok(target_path);
-            }
-        };
-
-        // Path exists - verify it's within base directory (prevents path traversal)
-        if !canonical.starts_with(&self.base_dir) {
-            return Err(ToolError::PermissionDenied {
-                tool: self.name().to_string(),
-                message: format!(
-                    "Path '{}' is outside the allowed workspace directory",
-                    user_path
-                ),
-            });
-        }
-
-        // Check against blocked system paths
-        if is_system_path(&canonical) {
-            return Err(ToolError::PermissionDenied {
-                tool: self.name().to_string(),
-                message: format!(
-                    "Access to system path '{}' is not allowed",
-                    canonical.display()
-                ),
-            });
-        }
-
-        Ok(canonical)
-    }
-
-    /// Cleans a user-provided path to prevent traversal attacks
-    ///
-    /// Removes ".." and "." components and normalizes the path
-    fn clean_path(&self, user_path: &str) -> PathBuf {
-        let path = Path::new(user_path);
-        let mut components = Vec::new();
-
-        for component in path.components() {
-            match component {
-                std::path::Component::Normal(name) => components.push(name),
-                std::path::Component::ParentDir => {
-                    // Only go up if we have components to go back from
-                    if !components.is_empty() {
-                        components.pop();
+                        message: format!("Failed to resolve path '{}': {}", path, source),
                     }
                 }
-                // Ignore current dir and root prefix
-                _ => {}
-            }
-        }
-
-        let mut result = PathBuf::new();
-        for component in components {
-            result.push(component);
-        }
-
-        result
+                PathValidationError::InvalidBaseDirectory(msg) => ToolError::ExecutionFailed {
+                    tool: self.name().to_string(),
+                    message: format!("Base directory error: {}", msg),
+                },
+            })
     }
 
     /// Reads the contents of a file
@@ -200,8 +136,11 @@ impl FilesystemTool {
     /// * `Ok(String)` - Success confirmation message
     /// * `Err(ToolError)` - If write fails
     async fn write_file(&self, path: &Path, content: &str) -> ToolResult<String> {
-        // Check if file exists (for warning)
-        let exists = path.exists();
+        // Check if file exists (for warning) - use async try_exists for non-blocking
+        let exists = tokio::fs::try_exists(path)
+            .await
+            .unwrap_or(false);
+        
         if exists {
             tracing::warn!(
                 "File exists, overwriting: {}",
@@ -234,6 +173,11 @@ impl FilesystemTool {
     /// # Returns
     /// * `Ok(String)` - JSON array of directory entries with name and type
     /// * `Err(ToolError)` - If path is not a directory or cannot be read
+    ///
+    /// # Entry Types
+    /// - "file": Regular file
+    /// - "directory": Directory
+    /// - "other": Symlink, pipe, socket, or other special file type
     async fn list_dir(&self, path: &Path) -> ToolResult<String> {
         // Verify it's a directory
         let metadata = fs::metadata(path).await.map_err(|e| ToolError::ExecutionFailed {
@@ -289,7 +233,7 @@ impl Tool for FilesystemTool {
     }
 
     fn description(&self) -> &str {
-        "Read, write, and list files in the workspace. Supports three operations: \"read\" to read file contents, \"write\" to create or overwrite files, and \"list\" to list directory contents. All paths are restricted to the workspace directory for security."
+        "Read, write, and list files in the base directory. Supports three operations: \"read\" to read file contents, \"write\" to create or overwrite files, and \"list\" to list directory contents. All paths are restricted to the base directory for security."
     }
 
     fn parameters(&self) -> Value {
@@ -303,7 +247,7 @@ impl Tool for FilesystemTool {
                 },
                 "path": {
                     "type": "string",
-                    "description": "File or directory path relative to the workspace"
+                    "description": "File or directory path relative to the base directory"
                 },
                 "content": {
                     "type": "string",
@@ -339,7 +283,7 @@ impl Tool for FilesystemTool {
 
         match operation {
             "read" => {
-                let path = self.validate_path(path_str).await?;
+                let path = self.validate_path_internal(path_str).await?;
                 self.read_file(&path).await
             }
             "write" => {
@@ -350,11 +294,11 @@ impl Tool for FilesystemTool {
                         tool: self.name().to_string(),
                         message: "Missing required parameter 'content' for write operation".to_string(),
                     })?;
-                let path = self.validate_path(path_str).await?;
+                let path = self.validate_path_internal(path_str).await?;
                 self.write_file(&path, content).await
             }
             "list" => {
-                let path = self.validate_path(path_str).await?;
+                let path = self.validate_path_internal(path_str).await?;
                 self.list_dir(&path).await
             }
             _ => Err(ToolError::InvalidArguments {
@@ -368,46 +312,12 @@ impl Tool for FilesystemTool {
     }
 }
 
-/// Checks if a path is a sensitive system path that should be blocked
-///
-/// # Arguments
-/// * `path` - The canonicalized path to check
-///
-/// # Returns
-/// `true` if the path is a blocked system path
-fn is_system_path(path: &Path) -> bool {
-    let blocked_prefixes = [
-        "/etc",
-        "/root",
-        "/sys",
-        "/proc",
-        "/boot",
-        "/bin",
-        "/sbin",
-        "/lib",
-        "/lib64",
-        "/usr",
-        "/dev",
-        "/var/log",
-    ];
-
-    // Convert path to string for prefix checking
-    let path_str = path.to_string_lossy();
-
-    for prefix in &blocked_prefixes {
-        if path_str.starts_with(prefix) {
-            return true;
-        }
-    }
-
-    false
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
+    use crate::utils::paths::is_system_path;
 
     /// Creates a FilesystemTool with a temporary directory as base
     fn create_test_tool() -> (FilesystemTool, TempDir) {
@@ -685,19 +595,23 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
+        
+        // Must be PermissionDenied or SystemPathBlocked - NotFound is NOT acceptable for traversal attacks
         match err {
             ToolError::PermissionDenied { message, .. } => {
-                assert!(message.contains("outside the allowed workspace"));
+                assert!(
+                    message.contains("outside") || message.contains("system path"),
+                    "Expected security-related message, got: {}",
+                    message
+                );
             }
-            ToolError::NotFound { .. } => {
-                // This is also acceptable - file doesn't exist in the temp dir
-            }
-            _ => panic!("Expected PermissionDenied or NotFound error"),
+            _ => panic!("Expected PermissionDenied for path traversal attack, got {:?}", err),
         }
     }
 
     #[test]
     fn test_is_system_path() {
+        // Unix paths
         assert!(is_system_path(Path::new("/etc/passwd")));
         assert!(is_system_path(Path::new("/root/.bashrc")));
         assert!(is_system_path(Path::new("/sys/kernel")));
@@ -706,9 +620,15 @@ mod tests {
         assert!(is_system_path(Path::new("/bin/ls")));
         assert!(is_system_path(Path::new("/usr/bin")));
 
+        // Windows paths (cross-platform security)
+        assert!(is_system_path(Path::new("C:\\Windows\\System32")));
+        assert!(is_system_path(Path::new("C:\\Program Files\\App")));
+
+        // Non-system paths
         assert!(!is_system_path(Path::new("/home/user/file")));
         assert!(!is_system_path(Path::new("/tmp/test")));
         assert!(!is_system_path(Path::new("./relative/path")));
+        assert!(!is_system_path(Path::new("C:\\Users\\user\\file.txt")));
     }
 
     #[tokio::test]

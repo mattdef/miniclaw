@@ -1,6 +1,6 @@
 # Story 6.2: Filesystem Tool
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -376,43 +376,76 @@ Claude (Anthropic) - 2026-02-16
 
 2. ✅ **Task 2-4: Operation Implementations**
    - `read_file`: Reads UTF-8 text files with proper error handling
-   - `write_file`: Creates files and parent directories, logs overwrite warnings
-   - `list_dir`: Returns JSON array with file names and types
+   - `write_file`: Creates files and parent directories, logs overwrite warnings (async exists check)
+   - `list_dir`: Returns JSON array with file names and types (documented "other" type for symlinks)
    - All operations use async tokio::fs for non-blocking I/O
 
 3. ✅ **Task 5: Path Security Implementation**
-   - `validate_path`: Dual-mode validation for existing and non-existing paths
-   - `clean_path`: Removes ".." components to prevent traversal attacks
-   - `is_system_path`: Blocks access to sensitive system directories (/etc, /root, etc.)
-   - Canonicalization ensures paths stay within base directory
+   - Centralized path validation in `src/utils/paths.rs` (reusable by other tools)
+   - Proper canonicalization for both existing and non-existing paths (NFR-S3 compliant)
+   - Cross-platform system path blocking (Unix + Windows)
+   - Base directory canonicalized once in constructor for performance
+   - Strict path traversal detection (always returns PermissionDenied)
 
 4. ✅ **Task 6: Tool Registration**
    - Registered FilesystemTool in `execute_one_shot` with workspace directory
    - Tool is now available for agent use in one-shot mode
 
 5. ✅ **Task 7: Testing**
-   - 17 comprehensive unit tests covering all operations
-   - Security tests for path traversal and system paths
+   - 17 comprehensive unit tests in filesystem.rs covering all operations
+   - 8 unit tests in utils/paths.rs for validation logic
+   - Security tests for path traversal and system paths (Unix + Windows)
    - Error handling tests for all edge cases
-   - All 290 tests pass (up from 288)
+   - All 298 tests pass (increased from 290)
+
+### Code Review Follow-up (AI) - 2026-02-16
+
+**11 issues found and fixed:**
+
+**HIGH severity fixes (4):**
+- Fixed NFR-S3 violation: Now uses proper canonicalize() for all paths via centralized utils/paths.rs
+- Added Windows system path blocking (C:\Windows, Program Files, etc.) for cross-platform security
+- Refactored path validation to reusable utils/paths.rs module for use by future tools (exec, spawn)
+- Stored canonical base_dir in struct to eliminate race conditions
+
+**MEDIUM severity fixes (5):**
+- Removed redundant canonicalize() calls for performance (base_dir canonicalized once in constructor)
+- Documented "other" type in list_dir() for symlinks/pipes/sockets
+- Made path traversal tests stricter (must return PermissionDenied, not NotFound)
+- Fixed async I/O: write_file() now uses tokio::fs::try_exists() instead of sync path.exists()
+- Updated File List to accurately reflect git commits (5fd381b + 9c2c4c3)
+
+**Terminology harmonization:**
+- Updated messages to use "base directory" consistently
 
 ### File List
 
 **Created Files:**
-1. `src/agent/tools/filesystem.rs` - FilesystemTool implementation (623 lines, 17 tests)
+1. `src/agent/tools/filesystem.rs` - FilesystemTool implementation (refactored to use utils/paths)
+2. `src/utils/paths.rs` - Centralized path validation utilities (NEW - 8 tests)
+3. `src/utils/mod.rs` - Utils module exports (NEW)
 
 **Modified Files:**
-1. `src/agent/tools/mod.rs` - Added `pub mod filesystem;` export
-2. `src/agent/oneshot.rs` - Registered FilesystemTool in tool registry
+1. `src/lib.rs` - Added utils module export
+2. `src/agent/tools/mod.rs` - Added `pub mod filesystem;` export (commit 5fd381b)
+3. `src/agent/oneshot.rs` - Registered FilesystemTool in tool registry (commit 5fd381b)
+
+**Git Commits:**
+- 5fd381b: Registration in mod.rs and oneshot.rs
+- 9c2c4c3: Initial filesystem.rs implementation
+- Current: Code review fixes (utils/paths refactor + security enhancements)
 
 **Verification:**
 - ✅ Tool appears in tool listings (verified via ToolRegistry)
 - ✅ All 3 operations (read, write, list) tested and working
-- ✅ Path security prevents traversal attacks (verified in tests)
-- ✅ All 290 tests pass (increased from 288)
+- ✅ Path security prevents traversal attacks (strict PermissionDenied enforcement)
+- ✅ Cross-platform system path blocking (Unix + Windows)
+- ✅ NFR-S3 compliance: All paths canonicalized via centralized utilities
+- ✅ All 298 tests pass (increased from 288, then from 290 after review fixes)
 - ✅ No regressions in existing tests
-- ✅ Async/await properly implemented with tokio::fs
+- ✅ Async/await properly implemented with tokio::fs throughout
 - ✅ Error handling follows ToolError conventions
+- ✅ Reusable path validation ready for exec/spawn tools
 
 ---
 
