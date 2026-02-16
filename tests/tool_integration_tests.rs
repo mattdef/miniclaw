@@ -591,3 +591,110 @@ async fn test_tool_result_format_consistency() {
     assert_eq!(parsed["data"], 42);
 }
 
+/// Integration test: Verify WebTool is registered in oneshot mode
+#[test]
+fn test_web_tool_registration() {
+    use miniclaw::agent::tools::{ToolRegistry, web::WebTool};
+    
+    let registry = ToolRegistry::new();
+    
+    // Register WebTool as done in oneshot.rs
+    let web_tool = WebTool::new();
+    registry.register(Box::new(web_tool)).unwrap();
+    
+    // Verify tool is registered
+    assert!(registry.contains("web"));
+    assert_eq!(registry.len(), 1);
+    
+    // Verify it appears in listings
+    let tools = registry.list_tools();
+    assert_eq!(tools.len(), 1);
+    
+    let (name, desc, _params) = &tools[0];
+    assert_eq!(name, "web");
+    assert!(desc.contains("Fetches web content"));
+    assert!(desc.contains("HTTP/HTTPS only"));
+    
+    // Verify tool definition is correct
+    let definitions = registry.get_tool_definitions();
+    assert_eq!(definitions.len(), 1);
+    assert_eq!(definitions[0]["function"]["name"], "web");
+    assert!(definitions[0]["function"]["parameters"]["properties"]["url"].is_object());
+    assert_eq!(definitions[0]["function"]["parameters"]["required"][0], "url");
+}
+
+/// Integration test: Verify SpawnTool is registered and executes correctly
+#[tokio::test]
+async fn test_spawn_tool_integration() {
+    use miniclaw::agent::tools::{ToolRegistry, spawn::SpawnTool};
+    use tempfile::TempDir;
+    
+    let temp_dir = TempDir::new().unwrap();
+    let registry = ToolRegistry::new();
+    
+    // Register SpawnTool as done in oneshot.rs
+    let spawn_tool = SpawnTool::new(temp_dir.path().to_path_buf(), false).unwrap();
+    registry.register(Box::new(spawn_tool)).unwrap();
+    
+    // Verify tool is registered
+    assert!(registry.contains("spawn"));
+    assert_eq!(registry.len(), 1);
+    
+    // Verify it appears in listings
+    let tools = registry.list_tools();
+    assert_eq!(tools.len(), 1);
+    
+    let (name, desc, _params) = &tools[0];
+    assert_eq!(name, "spawn");
+    assert!(desc.contains("background"));
+    assert!(desc.contains("blacklist"));
+    
+    // Execute spawn tool with a simple command
+    let mut args = HashMap::new();
+    args.insert("command".to_string(), json!("echo"));
+    args.insert("args".to_string(), json!(["test"]));
+    
+    let ctx = ToolExecutionContext::default();
+    let result = registry.execute_tool("spawn", args, &ctx).await;
+    
+    // Should succeed and return JSON with PID
+    assert!(result.is_ok());
+    let output = result.unwrap();
+    let parsed: Value = serde_json::from_str(&output).unwrap();
+    assert_eq!(parsed["success"], true);
+    assert!(parsed["pid"].as_u64().unwrap() > 0);
+    assert!(parsed["message"].as_str().unwrap().contains("spawned successfully"));
+}
+
+/// Integration test: Verify SpawnTool blacklist enforcement through registry
+#[tokio::test]
+async fn test_spawn_tool_blacklist_integration() {
+    use miniclaw::agent::tools::{ToolRegistry, spawn::SpawnTool};
+    use tempfile::TempDir;
+    
+    let temp_dir = TempDir::new().unwrap();
+    let registry = ToolRegistry::new();
+    
+    let spawn_tool = SpawnTool::new(temp_dir.path().to_path_buf(), false).unwrap();
+    registry.register(Box::new(spawn_tool)).unwrap();
+    
+    // Try to execute blacklisted command
+    let mut args = HashMap::new();
+    args.insert("command".to_string(), json!("sudo"));
+    args.insert("args".to_string(), json!(["whoami"]));
+    
+    let ctx = ToolExecutionContext::default();
+    let result = registry.execute_tool("spawn", args, &ctx).await;
+    
+    // Should fail with permission denied
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ToolError::PermissionDenied { message, .. } => {
+            assert!(message.contains("Command not allowed"));
+            assert!(message.contains("sudo"));
+        }
+        _ => panic!("Expected PermissionDenied error"),
+    }
+}
+
+

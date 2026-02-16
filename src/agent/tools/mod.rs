@@ -6,6 +6,7 @@
 pub mod exec;
 pub mod filesystem;
 pub mod message;
+pub mod spawn;
 pub mod types;
 pub mod web;
 

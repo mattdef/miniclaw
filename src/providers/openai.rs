@@ -27,8 +27,10 @@ use std::time::Duration;
 
 use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use tracing::{debug, error, info, warn};
+
+#[cfg(test)]
+use serde_json::json;
 
 use crate::providers::factory::OpenRouterConfig;
 use crate::providers::{LlmMessage, LlmProvider, LlmResponse, LlmToolCall, ProviderError};

@@ -645,7 +645,7 @@ pub trait Tool: Send + Sync {
     fn name(&self) -> &str;
     fn description(&self) -> &str;
     fn parameters(&self) -> Value; // JSON Schema
-    async fn execute(&self, args: HashMap<String, Value>) -> Result<String>;
+    async fn execute(&self, args: HashMap<String, Value>, ctx: &ToolExecutionContext) -> ToolResult<String>;
 }
 
 // src/channels/mod.rs - Channel boundary

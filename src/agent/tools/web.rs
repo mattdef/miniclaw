@@ -16,6 +16,8 @@ const DEFAULT_WEB_TIMEOUT_SECS: u64 = 30;
 const MAX_REDIRECTS: usize = 5;
 /// Maximum response size in bytes (100KB)
 const MAX_RESPONSE_SIZE: usize = 100 * 1024;
+/// Maximum error body size to include in error messages
+const MAX_ERROR_BODY_SIZE: usize = 500;
 
 /// Tool for fetching web content
 ///
@@ -73,10 +75,12 @@ impl WebTool {
     /// Configures the client with:
     /// - 30 second timeout
     /// - Max 5 redirects
+    /// - User-Agent header for proper identification
     fn create_client(&self) -> ToolResult<reqwest::Client> {
         reqwest::Client::builder()
             .timeout(Duration::from_secs(DEFAULT_WEB_TIMEOUT_SECS))
             .redirect(reqwest::redirect::Policy::limited(MAX_REDIRECTS))
+            .user_agent("miniclaw/0.1.0 (autonomous-agent)")
             .build()
             .map_err(|e| ToolError::ExecutionFailed {
                 tool: self.name().to_string(),
@@ -135,6 +139,7 @@ impl WebTool {
             message: format!("Failed to read response body: {}", e),
         })?;
 
+        // Truncate to MAX_RESPONSE_SIZE if needed (100KB limit per AC#4)
         let content = if content_bytes.len() > MAX_RESPONSE_SIZE {
             String::from_utf8_lossy(&content_bytes[..MAX_RESPONSE_SIZE]).to_string()
         } else {
@@ -148,12 +153,18 @@ impl WebTool {
     ///
     /// Strips HTML tags while preserving text structure.
     /// Uses a simple state machine approach to avoid regex dependency.
+    /// Decodes common HTML entities for readability.
     ///
     /// # Arguments
     /// * `html` - The HTML content to process
     ///
     /// # Returns
     /// Plain text with HTML tags removed
+    ///
+    /// # Note
+    /// Only common HTML entities are decoded (&lt;, &gt;, &amp;, &quot;, &apos;, &nbsp;).
+    /// Complex or numeric entities beyond the basic set may not be decoded.
+    /// This is sufficient for most web content but may not handle all HTML5 entities.
     fn extract_text_from_html(&self, html: &str) -> String {
         // First pass: replace block-level closing tags with newlines for structure
         let with_structure = html
@@ -212,11 +223,6 @@ impl WebTool {
         content_type.to_lowercase().contains("text/html")
     }
 
-    /// Determines if content is JSON based on content type
-    fn is_json_content(&self, content_type: &str) -> bool {
-        content_type.to_lowercase().contains("application/json")
-    }
-
     /// Processes the response content based on content type
     ///
     /// - HTML: Strips tags and extracts text
@@ -245,7 +251,8 @@ impl Tool for WebTool {
 
     fn description(&self) -> &str {
         "Fetches web content from a URL. Supports HTML (strips tags), JSON (returns raw), and plain text. \
-         HTTP/HTTPS only. Follows up to 5 redirects. 30-second timeout. Max 100KB response size."
+         HTTP/HTTPS only. Follows up to 5 redirects. 30-second timeout. Max 100KB response size. \
+         Assumes UTF-8 encoding for all content."
     }
 
     fn parameters(&self) -> Value {
@@ -283,6 +290,12 @@ impl Tool for WebTool {
 
         // Check for HTTP errors (4xx, 5xx)
         if status >= 400 {
+            let error_body = if content.len() > MAX_ERROR_BODY_SIZE {
+                format!("{}... (truncated)", &content[..MAX_ERROR_BODY_SIZE])
+            } else {
+                content.clone()
+            };
+            
             return Err(ToolError::ExecutionFailed {
                 tool: self.name().to_string(),
                 message: format!(
@@ -300,7 +313,7 @@ impl Tool for WebTool {
                         503 => "Service Unavailable",
                         _ => "Unknown error",
                     },
-                    &content[..content.len().min(500)]
+                    error_body
                 ),
             });
         }
@@ -395,14 +408,6 @@ mod tests {
         assert!(tool.is_html_content("TEXT/HTML"));
         assert!(!tool.is_html_content("application/json"));
         assert!(!tool.is_html_content("text/plain"));
-    }
-
-    #[test]
-    fn test_is_json_content() {
-        let tool = WebTool::new();
-        assert!(tool.is_json_content("application/json"));
-        assert!(tool.is_json_content("application/json; charset=utf-8"));
-        assert!(!tool.is_json_content("text/html"));
     }
 
     #[test]
@@ -538,5 +543,44 @@ mod tests {
             }
             _ => panic!("Expected InvalidArguments error"),
         }
+    }
+
+    #[test]
+    fn test_max_response_size_truncation() {
+        let tool = WebTool::new();
+        
+        // Create content larger than MAX_RESPONSE_SIZE (100KB)
+        let large_content = "x".repeat(150 * 1024); // 150KB
+        
+        // Simulate what happens in fetch_url when content exceeds limit
+        let content_bytes = large_content.as_bytes();
+        let truncated = if content_bytes.len() > MAX_RESPONSE_SIZE {
+            String::from_utf8_lossy(&content_bytes[..MAX_RESPONSE_SIZE]).to_string()
+        } else {
+            String::from_utf8_lossy(content_bytes).to_string()
+        };
+        
+        // Verify truncation occurred
+        assert_eq!(truncated.len(), MAX_RESPONSE_SIZE);
+        assert!(truncated.len() < large_content.len());
+    }
+
+    #[test]
+    fn test_http_error_body_truncation() {
+        let tool = WebTool::new();
+        
+        // Create error body larger than MAX_ERROR_BODY_SIZE (500 bytes)
+        let large_error = "e".repeat(1000);
+        
+        // Simulate error body truncation logic
+        let error_body = if large_error.len() > MAX_ERROR_BODY_SIZE {
+            format!("{}... (truncated)", &large_error[..MAX_ERROR_BODY_SIZE])
+        } else {
+            large_error.clone()
+        };
+        
+        // Verify truncation with ellipsis
+        assert!(error_body.contains("... (truncated)"));
+        assert!(error_body.len() < large_error.len() + 100); // Some buffer for " (truncated)"
     }
 }

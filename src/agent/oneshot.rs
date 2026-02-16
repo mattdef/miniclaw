@@ -100,6 +100,16 @@ pub async fn execute_one_shot(
         .register(Box::new(web_tool))
         .map_err(|e| anyhow::anyhow!("Failed to register web tool: {}", e))?;
 
+    // Register spawn tool with workspace directory
+    let spawn_tool = crate::agent::tools::spawn::SpawnTool::new(
+        workspace_path.clone(),
+        config.spawn_log_output,
+    )
+    .map_err(|e| anyhow::anyhow!("Failed to create spawn tool: {}", e))?;
+    tool_registry
+        .register(Box::new(spawn_tool))
+        .map_err(|e| anyhow::anyhow!("Failed to register spawn tool: {}", e))?;
+
     // Create a temporary session manager (not persisted)
     let temp_dir = std::env::temp_dir();
     let session_manager = Arc::new(tokio::sync::RwLock::new(
@@ -210,6 +220,7 @@ mod tests {
             model: Some("test-model".to_string()),
             telegram_token: None,
             telegram_whitelist: None,
+            spawn_log_output: false,
         };
 
         // This would need a runtime to test async
@@ -225,6 +236,7 @@ mod tests {
             model: Some("llama3.2".to_string()),
             telegram_token: None,
             telegram_whitelist: None,
+            spawn_log_output: false,
         };
 
         // Without API key, should attempt Ollama
@@ -264,6 +276,7 @@ mod tests {
             model: None,
             telegram_token: None,
             telegram_whitelist: None,
+            spawn_log_output: false,
         };
 
         let result = execute_one_shot(
@@ -287,6 +300,7 @@ mod tests {
             model: Some("config-model".to_string()),
             telegram_token: None,
             telegram_whitelist: None,
+            spawn_log_output: false,
         };
 
         // In real execution, the override would be used
@@ -306,6 +320,7 @@ mod tests {
             model: None,
             telegram_token: None,
             telegram_whitelist: None,
+            spawn_log_output: false,
         };
 
         let effective_model = None

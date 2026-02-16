@@ -81,6 +81,7 @@ fn merge_config_from_file(config: Config, path: &PathBuf) -> Result<Config> {
         model: file_config.model.or(config.model),
         telegram_token: file_config.telegram_token.or(config.telegram_token),
         telegram_whitelist: file_config.telegram_whitelist.or(config.telegram_whitelist),
+        spawn_log_output: file_config.spawn_log_output,
     })
 }
 
@@ -100,6 +101,7 @@ fn merge_env_variables(config: Config) -> Config {
             .ok()
             .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
             .or_else(|| config.telegram_whitelist),
+        spawn_log_output: config.spawn_log_output,
     }
 }
 
@@ -179,6 +181,7 @@ mod tests {
             model: Some("file-model".to_string()),
             telegram_token: Some("file-token".to_string()),
             telegram_whitelist: Some(vec!["user1".to_string()]),
+            spawn_log_output: false,
         };
 
         save_config(&test_config, &config_path).unwrap();
@@ -218,6 +221,7 @@ mod tests {
             model: Some("file-model".to_string()),
             telegram_token: Some("file-token".to_string()),
             telegram_whitelist: None,
+            spawn_log_output: false,
         };
         save_config(&file_config, &config_path).unwrap();
 
@@ -261,6 +265,7 @@ mod tests {
             model: Some("file-model".to_string()),
             telegram_token: None,
             telegram_whitelist: None,
+            spawn_log_output: false,
         };
         save_config(&file_config, &config_path).unwrap();
 
@@ -300,6 +305,7 @@ mod tests {
             model: Some("file-model".to_string()),
             telegram_token: Some("file-token".to_string()),
             telegram_whitelist: None,
+            spawn_log_output: false,
         };
         save_config(&file_config, &config_path).unwrap();
 

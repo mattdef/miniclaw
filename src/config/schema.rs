@@ -13,6 +13,14 @@ pub struct Config {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telegram_whitelist: Option<Vec<String>>,
+
+    /// Whether to log stdout/stderr output from spawned processes
+    #[serde(default = "default_spawn_log_output")]
+    pub spawn_log_output: bool,
+}
+
+fn default_spawn_log_output() -> bool {
+    false
 }
 
 impl Default for Config {
@@ -22,6 +30,7 @@ impl Default for Config {
             model: Some("google/gemini-2.5-flash".to_string()),
             telegram_token: None,
             telegram_whitelist: None,
+            spawn_log_output: false,
         }
     }
 }
@@ -46,6 +55,7 @@ mod tests {
             model: Some("test-model".to_string()),
             telegram_token: None,
             telegram_whitelist: None,
+            spawn_log_output: false,
         };
 
         let json = serde_json::to_string(&config).unwrap();
