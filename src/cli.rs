@@ -143,6 +143,27 @@ pub enum MemoryCommands {
         #[arg(long, group = "filter")]
         long: bool,
     },
+    /// Read recent daily notes
+    ///
+    /// Displays daily notes from the last N days, sorted chronologically.
+    ///
+    /// # Examples
+    ///
+    /// Show last 7 days (default):
+    /// ```bash
+    /// miniclaw memory recent
+    /// ```
+    ///
+    /// Show last 14 days:
+    /// ```bash
+    /// miniclaw memory recent --days 14
+    /// miniclaw memory recent -d 14
+    /// ```
+    Recent {
+        /// Number of days to show (default: 7)
+        #[arg(short, long, default_value = "7", value_name = "N")]
+        days: usize,
+    },
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
@@ -251,6 +272,9 @@ fn handle_memory_command(command: MemoryCommands, config: &Config) -> anyhow::Re
             MemoryCommands::Read { today, long } => {
                 handle_memory_read(today, long, config).await
             }
+            MemoryCommands::Recent { days } => {
+                handle_memory_recent(days, config).await
+            }
         }
     });
 
@@ -335,6 +359,72 @@ async fn handle_memory_read(today: bool, long: bool, _config: &Config) -> anyhow
                 sections.len()
             );
         }
+    }
+
+    Ok(())
+}
+
+async fn handle_memory_recent(days: usize, _config: &Config) -> anyhow::Result<()> {
+    use crate::memory::MemoryStore;
+
+    // Validate days parameter
+    if days == 0 {
+        anyhow::bail!("Days must be a positive integer");
+    }
+    if days > 365 {
+        eprintln!("\x1b[33m⚠️  Warning: Large day count ({}). This may take a while.\x1b[0m", days);
+    }
+
+    let workspace_path = dirs::home_dir()
+        .map(|home| home.join(".miniclaw").join("workspace"))
+        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    
+    let memory_store = MemoryStore::new(workspace_path);
+
+    tracing::info!(days = days, "Reading recent daily notes");
+
+    // Read recent daily notes
+    let sections = memory_store.read_recent_daily_notes(days).await
+        .map_err(|e| anyhow::anyhow!("Failed to read daily notes: {}", e))?;
+
+    if sections.is_empty() {
+        println!("\x1b[33m📝 No daily notes found for the last {} days.\x1b[0m", days);
+    } else {
+        let total_entries: usize = sections.iter().map(|s| s.entries.len()).sum();
+        
+        let days_text = if days == 1 { "day" } else { "days" };
+        println!("\x1b[1;36m## 📅 Daily Notes (Last {} {})\x1b[0m", days, days_text);
+        println!("\x1b[90m{} sections, {} total entries\x1b[0m\n", sections.len(), total_entries);
+        
+        let mut entry_count = 0;
+        for section in &sections {
+            println!("\x1b[1;32m## 📅 {}\x1b[0m", section.date);
+            
+            for entry in &section.entries {
+                entry_count += 1;
+                let time = entry.timestamp.format("%H:%M:%S UTC");
+                println!("  \x1b[32m•\x1b[0m {} \x1b[90m({})\x1b[0m", 
+                    entry.content,
+                    time
+                );
+                
+                // Simple pagination: pause every 20 entries
+                if entry_count % 20 == 0 && entry_count < total_entries {
+                    println!("\n\x1b[90m--- Press Enter to continue ({}/{} entries) ---\x1b[0m", 
+                        entry_count, 
+                        total_entries
+                    );
+                    let mut buffer = String::new();
+                    std::io::stdin().read_line(&mut buffer).ok();
+                }
+            }
+            println!();
+        }
+        
+        println!("\x1b[90mTotal: {} entries across {} days\x1b[0m", 
+            total_entries, 
+            sections.len()
+        );
     }
 
     Ok(())

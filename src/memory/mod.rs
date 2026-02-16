@@ -15,6 +15,7 @@ pub mod types;
 
 pub use short_term::{ShortTermMemory, MemoryEntry as ShortTermMemoryEntry, MAX_SHORT_TERM_ENTRIES};
 pub use long_term::{LongTermMemory, LongTermMemoryEntry, MemorySection};
+pub use daily_notes::{DailyNoteEntry, DailyNoteSection, DEFAULT_RECENT_DAYS, DAILY_NOTE_RETENTION_DAYS};
 
 use types::{MemoryEntry, MemoryError};
 
@@ -95,11 +96,38 @@ impl MemoryStore {
             None::<fn(MemoryEntry)>,
         )
         .await?;
-        
+
         // Add to short-term memory using the new module
         self.short_term.add_entry(content).await;
-        
+
         Ok(file_path)
+    }
+
+    /// Reads recent daily notes from the last N days
+    ///
+    /// # Arguments
+    /// * `days` - Number of days to read (going backwards from today)
+    ///
+    /// # Returns
+    /// * `Ok(Vec<DailyNoteSection>)` - List of daily note sections, sorted chronologically
+    /// * `Err(MemoryError)` - If operation fails
+    pub async fn read_recent_daily_notes(
+        &self,
+        days: usize,
+    ) -> Result<Vec<daily_notes::DailyNoteSection>, MemoryError> {
+        daily_notes::read_recent_days(&self.workspace_path, days).await
+    }
+
+    /// Cleans up old daily note files
+    ///
+    /// Removes daily note files older than 30 days, but always preserves
+    /// files from the current month.
+    ///
+    /// # Returns
+    /// * `Ok((usize, usize))` - Number of files deleted and bytes freed
+    /// * `Err(MemoryError)` - If cleanup fails
+    pub async fn cleanup_daily_notes(&self) -> Result<(usize, usize), MemoryError> {
+        daily_notes::cleanup_old_daily_notes(&self.workspace_path).await
     }
 
     /// Gets short-term memory entries
@@ -122,7 +150,9 @@ impl MemoryStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::{Duration, Utc};
     use tempfile::tempdir;
+    use tokio::fs;
 
     #[tokio::test]
     async fn test_memory_store_creation() {
@@ -246,5 +276,57 @@ mod tests {
         assert_eq!(store.short_term().len().await, 1);
         let entries = store.short_term().get_entries().await;
         assert_eq!(entries[0].content, "Direct access");
+    }
+
+    #[tokio::test]
+    async fn test_read_recent_daily_notes() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let store = MemoryStore::new(workspace_path);
+
+        // Create some daily notes
+        store.create_daily_note("Entry 1".to_string()).await.unwrap();
+        store.create_daily_note("Entry 2".to_string()).await.unwrap();
+
+        // Read recent daily notes
+        let sections = store.read_recent_daily_notes(7).await.unwrap();
+        assert_eq!(sections.len(), 1);
+        assert_eq!(sections[0].entries.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn test_read_recent_daily_notes_empty() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let store = MemoryStore::new(workspace_path);
+
+        let sections = store.read_recent_daily_notes(7).await.unwrap();
+        assert!(sections.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_cleanup_daily_notes() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let memory_dir = workspace_path.join("memory");
+        let store = MemoryStore::new(workspace_path.clone());
+
+        // Create today's daily note
+        store.create_daily_note("Today's entry".to_string()).await.unwrap();
+
+        // Create an old file (40 days ago)
+        let old_date = (Utc::now() - Duration::days(40)).format("%Y-%m-%d");
+        let old_file = memory_dir.join(format!("{}.md", old_date));
+        fs::write(&old_file, "# Daily Note\n\n## 10:00:00 UTC\n\nOld entry\n\n---\n").await.unwrap();
+
+        // Run cleanup
+        let (deleted, bytes_freed) = store.cleanup_daily_notes().await.unwrap();
+        assert_eq!(deleted, 1);
+        assert!(bytes_freed > 0);
+
+        // Old file should be deleted, today's file should remain
+        assert!(!old_file.exists());
+        let today_file = memory_dir.join(format!("{}.md", Utc::now().format("%Y-%m-%d")));
+        assert!(today_file.exists());
     }
 }
