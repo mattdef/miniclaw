@@ -3,14 +3,18 @@
 //! This module handles skill discovery, loading, and management for the agent.
 //! Skills are user-defined capabilities stored as markdown files in the skills directory.
 
+pub mod constants;
 pub mod loader;
+pub mod manager;
 pub mod types;
 
 // Re-export commonly used types and functions
+pub use constants::BUILT_IN_TOOLS;
 pub use loader::{
     discover_skills, get_skills_directory, initialize_skills_directory, list_available_skills,
     load_all_skills, load_skill, skill_exists, skills_directory_exists,
 };
+pub use manager::{ManagedSkill, SkillManagerError, SkillMetadata, SkillsManager};
 pub use types::{Skill, SkillError, SkillParameter, SkillSummary};
 
 use anyhow::Result;

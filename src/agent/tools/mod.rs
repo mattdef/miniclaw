@@ -8,6 +8,7 @@ pub mod exec;
 pub mod filesystem;
 pub mod memory;
 pub mod message;
+pub mod skill;
 pub mod spawn;
 pub mod types;
 pub mod web;

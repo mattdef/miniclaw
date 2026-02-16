@@ -90,11 +90,11 @@ development_status:
   epic-6-retrospective: done
 
   # Epic 7: Tool System - Advanced Tools
-  epic-7: in-progress
+  epic-7: done
   7-1-cron-tool-task-scheduling: done
   7-2-write-memory-tool: done
-  7-3-skill-management-tools: backlog
-  epic-7-retrospective: optional
+  7-3-skill-management-tools: done
+  epic-7-retrospective: done
 
   # Epic 8: Memory System
   epic-8: backlog

@@ -137,11 +137,32 @@ pub async fn execute_one_shot(
     let canonical_workspace = std::fs::canonicalize(&workspace_path)
         .context("Failed to canonicalize workspace path")?;
 
-    let memory_tool = crate::agent::tools::memory::MemoryTool::new(canonical_workspace)
+    let memory_tool = crate::agent::tools::memory::MemoryTool::new(canonical_workspace.clone())
         .map_err(|e| anyhow::anyhow!("Failed to create memory tool: {}", e))?;
     tool_registry
         .register(Box::new(memory_tool))
         .map_err(|e| anyhow::anyhow!("Failed to register memory tool: {}", e))?;
+
+    // Register skill management tools
+    let create_skill_tool = crate::agent::tools::skill::CreateSkillTool::new(canonical_workspace.clone());
+    tool_registry
+        .register(Box::new(create_skill_tool))
+        .map_err(|e| anyhow::anyhow!("Failed to register create_skill tool: {}", e))?;
+
+    let list_skills_tool = crate::agent::tools::skill::ListSkillsTool::new(canonical_workspace.clone());
+    tool_registry
+        .register(Box::new(list_skills_tool))
+        .map_err(|e| anyhow::anyhow!("Failed to register list_skills tool: {}", e))?;
+
+    let read_skill_tool = crate::agent::tools::skill::ReadSkillTool::new(canonical_workspace.clone());
+    tool_registry
+        .register(Box::new(read_skill_tool))
+        .map_err(|e| anyhow::anyhow!("Failed to register read_skill tool: {}", e))?;
+
+    let delete_skill_tool = crate::agent::tools::skill::DeleteSkillTool::new(canonical_workspace);
+    tool_registry
+        .register(Box::new(delete_skill_tool))
+        .map_err(|e| anyhow::anyhow!("Failed to register delete_skill tool: {}", e))?;
 
     // Create a temporary session manager (not persisted)
     let temp_dir = std::env::temp_dir();
