@@ -94,6 +94,12 @@ pub async fn execute_one_shot(
         .register(Box::new(exec_tool))
         .map_err(|e| anyhow::anyhow!("Failed to register exec tool: {}", e))?;
 
+    // Register web tool
+    let web_tool = crate::agent::tools::web::WebTool::new();
+    tool_registry
+        .register(Box::new(web_tool))
+        .map_err(|e| anyhow::anyhow!("Failed to register web tool: {}", e))?;
+
     // Create a temporary session manager (not persisted)
     let temp_dir = std::env::temp_dir();
     let session_manager = Arc::new(tokio::sync::RwLock::new(

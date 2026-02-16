@@ -7,6 +7,7 @@ pub mod exec;
 pub mod filesystem;
 pub mod message;
 pub mod types;
+pub mod web;
 
 // Re-export types from types module for backward compatibility
 pub use types::{
