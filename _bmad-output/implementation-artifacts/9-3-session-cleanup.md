@@ -1,6 +1,6 @@
 # Story 9.3: Session Cleanup
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -348,3 +348,13 @@ k2p5 (Claude Code)
 - ✅ Added comprehensive logging (INFO summary, DEBUG per-session)
 - ✅ All 700+ tests pass with 0 regressions
 - ✅ Status: in-progress → review
+
+**[2026-02-16] Code Review Fixes Applied**
+- 🔧 FIXED: Race condition TOCTOU - delete_session() now re-verifies expiration before deletion
+- 🔧 FIXED: File size calculation race - uses pre-calculated size from scan
+- 🔧 FIXED: Logging accuracy - sessions_deleted now counts actual deletions, not attempted
+- 🔧 OPTIMIZED: Eliminated double directory scan - scan_expired_sessions() now returns (expired, total_count)
+- 🔧 REMOVED: count_session_files() method (no longer needed)
+- ✅ Added test_delete_session_toctou_protection() to verify race condition fix
+- ✅ All 570 tests pass (14 cleanup tests, +1 new test)
+- ✅ Status: review → done

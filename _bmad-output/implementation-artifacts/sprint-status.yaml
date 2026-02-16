@@ -105,11 +105,11 @@ development_status:
   epic-8-retrospective: done
 
   # Epic 9: Session Management
-  epic-9: in-progress
+  epic-9: done
   9-1-session-manager-core: done
   9-2-auto-persistence: done
-  9-3-session-cleanup: review
-  epic-9-retrospective: optional
+  9-3-session-cleanup: done
+  epic-9-retrospective: done
 
   # Epic 10: Telegram Channel Integration
   epic-10: backlog

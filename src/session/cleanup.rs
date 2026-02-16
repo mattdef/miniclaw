@@ -56,9 +56,12 @@ impl Cleanup {
     /// Scans all session files and returns expired ones
     ///
     /// # Returns
-    /// A vector of tuples containing (session_id, file_path, last_accessed, file_size)
-    pub async fn scan_expired_sessions(&self) -> Result<Vec<(String, PathBuf, DateTime<Utc>, u64)>> {
+    /// A tuple containing:
+    /// - Vector of (session_id, file_path, last_accessed, file_size) for expired sessions
+    /// - Total count of session files scanned
+    pub async fn scan_expired_sessions(&self) -> Result<(Vec<(String, PathBuf, DateTime<Utc>, u64)>, usize)> {
         let mut expired = Vec::new();
+        let mut total_count = 0;
 
         let mut entries = fs::read_dir(&self.sessions_dir).await.with_context(|| {
             format!(
@@ -74,6 +77,8 @@ impl Cleanup {
             if path.extension().and_then(|s| s.to_str()) != Some("json") {
                 continue;
             }
+
+            total_count += 1;
 
             let session_id = path
                 .file_stem()
@@ -103,33 +108,66 @@ impl Cleanup {
             }
         }
 
-        Ok(expired)
+        Ok((expired, total_count))
     }
 
     /// Deletes a session file and returns the bytes freed
     ///
+    /// Re-verifies expiration before deletion to avoid TOCTOU race conditions
+    /// where a session might be updated between scan and delete.
+    ///
     /// # Arguments
     /// * `path` - Path to the session file
+    /// * `session_id` - Session ID for logging
+    /// * `file_size` - Pre-calculated file size from scan
     ///
     /// # Returns
-    /// * `Ok(bytes_freed)` on success
+    /// * `Ok(bytes_freed)` on success (0 if session was preserved)
     /// * `Err` on failure
-    async fn delete_session(&self, path: &Path, session_id: &str, last_accessed: DateTime<Utc>) -> Result<u64> {
-        let file_size = self.get_file_size(path).await;
-        
-        fs::remove_file(path)
-            .await
-            .with_context(|| format!("Failed to delete session file: {:?}", path))?;
+    async fn delete_session(&self, path: &Path, session_id: &str, file_size: u64) -> Result<u64> {
+        // Re-read session file to verify it's still expired (TOCTOU protection)
+        match fs::read_to_string(path).await {
+            Ok(json) => {
+                match serde_json::from_str::<Session>(&json) {
+                    Ok(session) => {
+                        if !Self::is_expired(session.last_accessed) {
+                            // Session was updated since scan - preserve it!
+                            debug!(
+                                session_id = %session_id,
+                                last_accessed = %session.last_accessed,
+                                "Session was updated since scan, preserving"
+                            );
+                            return Ok(0); // Return 0 bytes freed
+                        }
+                        
+                        // Still expired - safe to delete
+                        fs::remove_file(path)
+                            .await
+                            .with_context(|| format!("Failed to delete session file: {:?}", path))?;
 
-        let age_days = Utc::now().signed_duration_since(last_accessed).num_days();
-        debug!(
-            session_id = %session_id,
-            last_accessed = %last_accessed,
-            age_days = age_days,
-            "Deleted expired session"
-        );
+                        let age_days = Utc::now().signed_duration_since(session.last_accessed).num_days();
+                        debug!(
+                            session_id = %session_id,
+                            last_accessed = %session.last_accessed,
+                            age_days = age_days,
+                            "Deleted expired session"
+                        );
 
-        Ok(file_size)
+                        Ok(file_size)
+                    }
+                    Err(e) => {
+                        // Corrupted file - skip it
+                        debug!("Skipping corrupted session file {:?}: {}", path, e);
+                        Ok(0)
+                    }
+                }
+            }
+            Err(e) => {
+                // File might have been deleted already (e.g., by another process)
+                debug!("Session file {:?} no longer exists or is unreadable: {}", path, e);
+                Ok(0)
+            }
+        }
     }
 
     /// Runs the cleanup process
@@ -138,15 +176,17 @@ impl Cleanup {
     pub async fn run(&self) -> Result<CleanupResult> {
         info!("Starting session cleanup scan");
 
-        let expired_sessions = self.scan_expired_sessions().await?;
-        let sessions_scanned = self.count_session_files().await?;
-        let sessions_deleted = expired_sessions.len();
+        let (expired_sessions, sessions_scanned) = self.scan_expired_sessions().await?;
+        let mut sessions_deleted = 0;
         let mut bytes_freed: u64 = 0;
 
-        for (session_id, path, last_accessed, _) in expired_sessions {
-            match self.delete_session(&path, &session_id, last_accessed).await {
+        for (session_id, path, _last_accessed, file_size) in expired_sessions {
+            match self.delete_session(&path, &session_id, file_size).await {
                 Ok(bytes) => {
-                    bytes_freed += bytes;
+                    if bytes > 0 {
+                        bytes_freed += bytes;
+                        sessions_deleted += 1;
+                    }
                 }
                 Err(e) => {
                     error!("Failed to delete session {}: {}", session_id, e);
@@ -167,21 +207,6 @@ impl Cleanup {
             sessions_deleted,
             bytes_freed,
         })
-    }
-
-    /// Counts total session files in the directory
-    async fn count_session_files(&self) -> Result<usize> {
-        let mut count = 0;
-
-        let mut entries = fs::read_dir(&self.sessions_dir).await?;
-        while let Some(entry) = entries.next_entry().await? {
-            let path = entry.path();
-            if path.extension().and_then(|s| s.to_str()) == Some("json") {
-                count += 1;
-            }
-        }
-
-        Ok(count)
     }
 
     /// Starts a background cleanup task that runs daily
@@ -299,11 +324,12 @@ mod tests {
             .unwrap();
 
         // Scan for expired sessions
-        let expired = cleanup.scan_expired_sessions().await.unwrap();
+        let (expired, total_count) = cleanup.scan_expired_sessions().await.unwrap();
 
         // Should find only the expired session
         assert_eq!(expired.len(), 1);
         assert_eq!(expired[0].0, "telegram_111");
+        assert_eq!(total_count, 2); // Total sessions scanned
     }
 
     #[tokio::test]
@@ -314,8 +340,9 @@ mod tests {
 
         let cleanup = Cleanup::new(sessions_dir);
 
-        let expired = cleanup.scan_expired_sessions().await.unwrap();
+        let (expired, total_count) = cleanup.scan_expired_sessions().await.unwrap();
         assert!(expired.is_empty());
+        assert_eq!(total_count, 0);
     }
 
     #[tokio::test]
@@ -326,8 +353,9 @@ mod tests {
 
         let cleanup = Cleanup::new(sessions_dir.clone());
 
-        // Create a session file
-        let session = Session::new("telegram".to_string(), "123".to_string());
+        // Create an expired session file
+        let mut session = Session::new("telegram".to_string(), "123".to_string());
+        session.last_accessed = Utc::now() - Duration::days(31); // Make it expired
         let json = serde_json::to_string(&session).unwrap();
         let path = sessions_dir.join("telegram_123.json");
         fs::write(&path, &json).await.unwrap();
@@ -336,7 +364,7 @@ mod tests {
 
         // Delete the session
         let bytes_freed = cleanup
-            .delete_session(&path, "telegram_123", session.last_accessed)
+            .delete_session(&path, "telegram_123", file_size)
             .await
             .unwrap();
 
@@ -483,5 +511,38 @@ mod tests {
         // Verify last_accessed was updated
         assert!(session.last_accessed > old_timestamp);
         assert!(!Cleanup::is_expired(session.last_accessed));
+    }
+
+    #[tokio::test]
+    async fn test_delete_session_toctou_protection() {
+        let temp_dir = TempDir::new().unwrap();
+        let sessions_dir = temp_dir.path().join("sessions");
+        fs::create_dir_all(&sessions_dir).await.unwrap();
+
+        let cleanup = Cleanup::new(sessions_dir.clone());
+
+        // Create an expired session file
+        let mut session = Session::new("telegram".to_string(), "999".to_string());
+        session.last_accessed = Utc::now() - Duration::days(31);
+        let json = serde_json::to_string(&session).unwrap();
+        let path = sessions_dir.join("telegram_999.json");
+        fs::write(&path, &json).await.unwrap();
+
+        let file_size = fs::metadata(&path).await.unwrap().len();
+
+        // Simulate session being updated between scan and delete
+        // (e.g., user sent a message and persistence saved it)
+        session.add_message(Message::new("user".to_string(), "Hello".to_string()));
+        let updated_json = serde_json::to_string(&session).unwrap();
+        fs::write(&path, updated_json).await.unwrap();
+
+        // Try to delete - should return 0 bytes (not deleted due to update)
+        let bytes_freed = cleanup
+            .delete_session(&path, "telegram_999", file_size)
+            .await
+            .unwrap();
+
+        assert_eq!(bytes_freed, 0); // Should not delete
+        assert!(path.exists()); // File should still exist
     }
 }
