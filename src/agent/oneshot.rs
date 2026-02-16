@@ -87,6 +87,13 @@ pub async fn execute_one_shot(
         .register(Box::new(fs_tool))
         .expect("Failed to register filesystem tool");
 
+    // Register exec tool with workspace directory
+    let exec_tool = crate::agent::tools::exec::ExecTool::new(workspace_path.clone())
+        .map_err(|e| anyhow::anyhow!("Failed to create exec tool: {}", e))?;
+    tool_registry
+        .register(Box::new(exec_tool))
+        .map_err(|e| anyhow::anyhow!("Failed to register exec tool: {}", e))?;
+
     // Create a temporary session manager (not persisted)
     let temp_dir = std::env::temp_dir();
     let session_manager = Arc::new(tokio::sync::RwLock::new(

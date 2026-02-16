@@ -84,7 +84,7 @@ development_status:
   epic-6: in-progress
   6-1-tool-registry-and-trait: done
   6-2-filesystem-tool: done
-  6-3-exec-tool: backlog
+  6-3-exec-tool: done
   6-4-web-tool: backlog
   6-5-spawn-tool: backlog
   epic-6-retrospective: optional
