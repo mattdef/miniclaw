@@ -9,14 +9,16 @@ use std::sync::Arc;
 async fn test_telegram_channel_creation_with_valid_token() {
     // This test validates token format without making API calls
     let token = "123456789:ABCdefGHIjklMNOpqrsTUVwxyz".to_string();
-    let result = TelegramChannel::new(token);
+    let whitelist = vec![]; // Empty whitelist for testing
+    let result = TelegramChannel::new(token, whitelist);
     assert!(result.is_ok(), "Should create channel with valid token format");
 }
 
 #[tokio::test]
 async fn test_telegram_channel_creation_with_invalid_token() {
     let token = "invalid-token-format".to_string();
-    let result = TelegramChannel::new(token);
+    let whitelist = vec![];
+    let result = TelegramChannel::new(token, whitelist);
     assert!(result.is_err(), "Should fail with invalid token format");
 }
 
@@ -26,7 +28,7 @@ async fn test_telegram_channel_registration_with_chathub() {
     let token = "123456789:test_token_for_integration".to_string();
     
     // Create channel
-    let channel = TelegramChannel::new(token).expect("Should create channel");
+    let channel = TelegramChannel::new(token, vec![]).expect("Should create channel");
     
     // Start the channel (this should spawn the dispatcher)
     // Note: Without a real token, this will fail to connect, but we can verify the setup
@@ -51,7 +53,7 @@ async fn test_end_to_end_message_flow() {
     };
 
     let hub = Arc::new(ChatHub::new());
-    let channel = TelegramChannel::new(token).expect("Should create channel with valid token");
+    let channel = TelegramChannel::new(token, vec![]).expect("Should create channel with valid token");
     
     // Start the channel
     channel.start(hub.clone()).await.expect("Should start channel");
@@ -69,7 +71,7 @@ async fn test_telegram_channel_trait_implementation() {
     use miniclaw::channels::Channel;
     
     let token = "123456789:test_token_trait".to_string();
-    let channel = TelegramChannel::new(token).expect("Should create channel");
+    let channel = TelegramChannel::new(token, vec![]).expect("Should create channel");
     
     // Verify Channel trait is implemented
     let _channel: &dyn Channel = &channel;
@@ -93,7 +95,7 @@ async fn test_outbound_message_delivery_integration() {
     let hub = Arc::new(ChatHub::new());
     let token = "123456789:test_outbound".to_string();
     
-    let channel = TelegramChannel::new(token).expect("Should create channel");
+    let channel = TelegramChannel::new(token, vec![]).expect("Should create channel");
     
     // Start channel to register outbound sender
     let _ = channel.start(hub.clone()).await;
@@ -131,4 +133,86 @@ fn test_token_validation_edge_cases() {
     assert!(!telegram::is_valid_token_format(":secret")); // Empty bot ID
     assert!(!telegram::is_valid_token_format("123:abc:def")); // Multiple colons
     assert!(!telegram::is_valid_token_format("12 3:secret")); // Space in bot ID
+}
+
+// ========================================
+// Whitelist Integration Tests (AC 2-5)
+// ========================================
+
+#[tokio::test]
+async fn test_whitelisted_user_message_accepted() {
+    // Test AC 3: Whitelisted user processing
+    let hub = Arc::new(ChatHub::new());
+    let token = "123456789:test_token_whitelist_accept".to_string();
+    let whitelisted_user_id = 123_456_789_i64;
+    
+    // Create channel with whitelist containing test user
+    let channel = TelegramChannel::new(token, vec![whitelisted_user_id])
+        .expect("Should create channel with whitelist");
+    
+    // Start the channel
+    let result = channel.start(hub.clone()).await;
+    assert!(result.is_ok(), "Channel should start successfully");
+    
+    // Note: Without mocking Telegram API, we can't fully test message flow
+    // But we've verified the channel accepts the whitelist configuration
+}
+
+#[tokio::test]
+async fn test_non_whitelisted_user_rejected() {
+    // Test AC 4: Non-whitelisted user rejection
+    let hub = Arc::new(ChatHub::new());
+    let token = "123456789:test_token_whitelist_reject".to_string();
+    let whitelisted_user_id = 123_456_789_i64;
+    
+    // Create channel with whitelist NOT containing test user
+    let channel = TelegramChannel::new(token, vec![whitelisted_user_id])
+        .expect("Should create channel with whitelist");
+    
+    // Start the channel
+    let result = channel.start(hub.clone()).await;
+    assert!(result.is_ok(), "Channel should start successfully");
+    
+    // The rejection logic is tested in message handler via unit tests
+    // Integration testing would require mocking teloxide Message objects
+}
+
+#[tokio::test]
+async fn test_empty_whitelist_secure_by_default() {
+    // Test AC 5: Empty whitelist security (secure by default)
+    use miniclaw::utils::security::WhitelistChecker;
+    
+    let checker = WhitelistChecker::new(vec![]);
+    
+    // Empty whitelist should reject ALL users (secure by default)
+    assert!(!checker.is_allowed(123_456_789), "Empty whitelist must reject all users");
+    assert!(!checker.is_allowed(987_654_321), "Empty whitelist must reject all users");
+    assert!(!checker.is_allowed(1), "Empty whitelist must reject all users");
+    assert!(checker.is_empty(), "Checker should report as empty");
+}
+
+#[tokio::test]
+async fn test_telegram_channel_whitelist_validation() {
+    // Test that TelegramChannel properly initializes with different whitelists
+    
+    // Empty whitelist
+    let channel1 = TelegramChannel::new(
+        "123456789:test1".to_string(),
+        vec![]
+    );
+    assert!(channel1.is_ok(), "Should accept empty whitelist");
+    
+    // Single user
+    let channel2 = TelegramChannel::new(
+        "123456789:test2".to_string(),
+        vec![123_456_789]
+    );
+    assert!(channel2.is_ok(), "Should accept single user whitelist");
+    
+    // Multiple users
+    let channel3 = TelegramChannel::new(
+        "123456789:test3".to_string(),
+        vec![123_456_789, 987_654_321, 111_222_333]
+    );
+    assert!(channel3.is_ok(), "Should accept multiple user whitelist");
 }

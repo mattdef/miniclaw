@@ -114,7 +114,7 @@ development_status:
   # Epic 10: Telegram Channel Integration
   epic-10: in-progress
   10-1-telegram-bot-adapter: done
-  10-2-telegram-whitelist: backlog
+  10-2-telegram-whitelist: done
   10-3-gateway-daemon-mode: backlog
   epic-10-retrospective: optional
 

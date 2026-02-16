@@ -279,7 +279,7 @@ mod tests {
             api_key: Some("test-key".to_string()),
             model: Some("test-model".to_string()),
             telegram_token: None,
-            telegram_whitelist: None,
+            allow_from: vec![],
             spawn_log_output: false,
         };
 
@@ -295,7 +295,7 @@ mod tests {
             api_key: None,
             model: Some("llama3.2".to_string()),
             telegram_token: None,
-            telegram_whitelist: None,
+            allow_from: vec![],
             spawn_log_output: false,
         };
 
@@ -335,7 +335,7 @@ mod tests {
             api_key: None,
             model: None,
             telegram_token: None,
-            telegram_whitelist: None,
+            allow_from: vec![],
             spawn_log_output: false,
         };
 
@@ -359,7 +359,7 @@ mod tests {
             api_key: Some("test-key".to_string()),
             model: Some("config-model".to_string()),
             telegram_token: None,
-            telegram_whitelist: None,
+            allow_from: vec![],
             spawn_log_output: false,
         };
 
@@ -379,7 +379,7 @@ mod tests {
             api_key: Some("test-key".to_string()),
             model: None,
             telegram_token: None,
-            telegram_whitelist: None,
+            allow_from: vec![],
             spawn_log_output: false,
         };
 

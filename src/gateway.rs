@@ -92,7 +92,7 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
 
     // Initialize Telegram channel if configured
     let telegram_channel = if let Some(token) = &config.telegram_token {
-        match TelegramChannel::new(token.clone()) {
+        match TelegramChannel::new(token.clone(), config.allow_from.clone()) {
             Ok(channel) => {
                 match channel.start(Arc::clone(&chat_hub)).await {
                     Ok(()) => {

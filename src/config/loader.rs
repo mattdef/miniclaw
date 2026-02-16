@@ -80,7 +80,11 @@ fn merge_config_from_file(config: Config, path: &PathBuf) -> Result<Config> {
         api_key: file_config.api_key.or(config.api_key),
         model: file_config.model.or(config.model),
         telegram_token: file_config.telegram_token.or(config.telegram_token),
-        telegram_whitelist: file_config.telegram_whitelist.or(config.telegram_whitelist),
+        allow_from: if file_config.allow_from.is_empty() {
+            config.allow_from
+        } else {
+            file_config.allow_from
+        },
         spawn_log_output: file_config.spawn_log_output,
     })
 }
@@ -95,10 +99,17 @@ fn merge_env_variables(config: Config) -> Config {
         telegram_token: std::env::var("TELEGRAM_BOT_TOKEN")
             .ok()
             .or(config.telegram_token),
-        telegram_whitelist: std::env::var("MINICLAW_TELEGRAM_WHITELIST")
+        allow_from: std::env::var("MINICLAW_ALLOW_FROM")
             .ok()
-            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
-            .or(config.telegram_whitelist),
+            .map(|s| {
+                s.split(',')
+                    .map(|s| s.trim().parse::<i64>().ok())
+                    .filter_map(|x| x)
+                    .filter(|&x| x > 0)
+                    .collect()
+            })
+            .filter(|v: &Vec<i64>| !v.is_empty())
+            .unwrap_or(config.allow_from),
         spawn_log_output: config.spawn_log_output,
     }
 }
@@ -151,13 +162,14 @@ mod tests {
             env::remove_var("MINICLAW_API_KEY");
             env::remove_var("MINICLAW_MODEL");
             env::remove_var("TELEGRAM_BOT_TOKEN");
-            env::remove_var("MINICLAW_TELEGRAM_WHITELIST");
+            env::remove_var("MINICLAW_ALLOW_FROM");
         }
 
         let config = load_config(None, None).unwrap();
         assert!(config.api_key.is_none());
         assert_eq!(config.model, Some("google/gemini-2.5-flash".to_string()));
         assert!(config.telegram_token.is_none());
+        assert!(config.allow_from.is_empty()); // Secure by default
     }
 
     #[test]
@@ -172,13 +184,14 @@ mod tests {
             env::remove_var("MINICLAW_API_KEY");
             env::remove_var("MINICLAW_MODEL");
             env::remove_var("TELEGRAM_BOT_TOKEN");
+            env::remove_var("MINICLAW_ALLOW_FROM");
         }
 
         let test_config = Config {
             api_key: Some("file-api-key".to_string()),
             model: Some("file-model".to_string()),
             telegram_token: Some("file-token".to_string()),
-            telegram_whitelist: Some(vec!["user1".to_string()]),
+            allow_from: vec![123_456_789, 987_654_321],
             spawn_log_output: false,
         };
 
@@ -188,6 +201,7 @@ mod tests {
         assert_eq!(loaded.api_key, Some("file-api-key".to_string()));
         assert_eq!(loaded.model, Some("file-model".to_string()));
         assert_eq!(loaded.telegram_token, Some("file-token".to_string()));
+        assert_eq!(loaded.allow_from, vec![123_456_789, 987_654_321]);
     }
 
     #[test]
@@ -218,7 +232,7 @@ mod tests {
             api_key: Some("file-key".to_string()),
             model: Some("file-model".to_string()),
             telegram_token: Some("file-token".to_string()),
-            telegram_whitelist: None,
+            allow_from: vec![],
             spawn_log_output: false,
         };
         save_config(&file_config, &config_path).unwrap();
@@ -255,6 +269,7 @@ mod tests {
             env::remove_var("MINICLAW_API_KEY");
             env::remove_var("MINICLAW_MODEL");
             env::remove_var("TELEGRAM_BOT_TOKEN");
+            env::remove_var("MINICLAW_ALLOW_FROM");
         }
 
         // Create config file
@@ -262,7 +277,7 @@ mod tests {
             api_key: Some("file-key".to_string()),
             model: Some("file-model".to_string()),
             telegram_token: None,
-            telegram_whitelist: None,
+            allow_from: vec![],
             spawn_log_output: false,
         };
         save_config(&file_config, &config_path).unwrap();
@@ -295,6 +310,7 @@ mod tests {
             env::remove_var("MINICLAW_API_KEY");
             env::remove_var("MINICLAW_MODEL");
             env::remove_var("TELEGRAM_BOT_TOKEN");
+            env::remove_var("MINICLAW_ALLOW_FROM");
         }
 
         // Layer 1: File config with api_key
@@ -302,14 +318,15 @@ mod tests {
             api_key: Some("file-api-key".to_string()),
             model: Some("file-model".to_string()),
             telegram_token: Some("file-token".to_string()),
-            telegram_whitelist: None,
+            allow_from: vec![111_111_111],
             spawn_log_output: false,
         };
         save_config(&file_config, &config_path).unwrap();
 
-        // Layer 2: Env overrides api_key
+        // Layer 2: Env overrides api_key and allow_from
         unsafe {
             env::set_var("OPENROUTER_API_KEY", "env-api-key");
+            env::set_var("MINICLAW_ALLOW_FROM", "222222222,333333333");
         }
 
         // Layer 3: CLI overrides model
@@ -319,10 +336,12 @@ mod tests {
         assert_eq!(config.api_key, Some("env-api-key".to_string())); // From env
         assert_eq!(config.model, Some("cli-model".to_string())); // From CLI
         assert_eq!(config.telegram_token, Some("file-token".to_string())); // From file
+        assert_eq!(config.allow_from, vec![222_222_222, 333_333_333]); // From env
 
         // Cleanup
         unsafe {
             env::remove_var("OPENROUTER_API_KEY");
+            env::remove_var("MINICLAW_ALLOW_FROM");
         }
     }
 
@@ -343,25 +362,38 @@ mod tests {
     }
 
     #[test]
-    fn test_telegram_whitelist_env() {
+    fn test_allow_from_env() {
         let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
         unsafe {
-            env::set_var("MINICLAW_TELEGRAM_WHITELIST", "user1, user2, user3");
+            env::set_var("MINICLAW_ALLOW_FROM", "123456789, 987654321, 111222333");
         }
 
         let config = load_config(None, None).unwrap();
 
         assert_eq!(
-            config.telegram_whitelist,
-            Some(vec![
-                "user1".to_string(),
-                "user2".to_string(),
-                "user3".to_string()
-            ])
+            config.allow_from,
+            vec![123_456_789, 987_654_321, 111_222_333]
         );
 
         unsafe {
-            env::remove_var("MINICLAW_TELEGRAM_WHITELIST");
+            env::remove_var("MINICLAW_ALLOW_FROM");
+        }
+    }
+
+    #[test]
+    fn test_allow_from_env_invalid_values_filtered() {
+        let _lock = CONFIG_TEST_ENV_LOCK.lock().unwrap();
+        unsafe {
+            env::set_var("MINICLAW_ALLOW_FROM", "123, abc, 0, -5, 456");
+        }
+
+        let config = load_config(None, None).unwrap();
+
+        // Only valid positive integers should be kept
+        assert_eq!(config.allow_from, vec![123, 456]);
+
+        unsafe {
+            env::remove_var("MINICLAW_ALLOW_FROM");
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::config::{Config, save_config};
+use crate::config::{save_config, Config};
 use crate::workspace;
 use anyhow::{Context, Result};
 use inquire::Confirm;
@@ -121,7 +121,10 @@ fn collect_user_configuration(skip_prompts: bool, verbose: bool) -> Result<Confi
 
     config.telegram_token = prompt_telegram_token(verbose)?;
 
-    config.telegram_whitelist = prompt_telegram_whitelist(verbose)?;
+    // Configure whitelist if Telegram token is set
+    if config.telegram_token.is_some() {
+        config.allow_from = prompt_telegram_whitelist(verbose)?;
+    }
 
     // Confirmation step before saving (AC 4)
     if !confirm_configuration(&config)? {
@@ -149,10 +152,11 @@ fn confirm_configuration(config: &Config) -> Result<bool> {
         println!("  Telegram Bot: (not set)");
     }
 
-    if let Some(whitelist) = &config.telegram_whitelist {
-        println!("  Whitelisted Users: {}", whitelist.join(", "));
+    if config.allow_from.is_empty() {
+        println!("  Whitelisted Users: (empty - secure by default, no access)");
     } else {
-        println!("  Whitelisted Users: (not set)");
+        let user_ids: Vec<String> = config.allow_from.iter().map(|id| id.to_string()).collect();
+        println!("  Whitelisted Users: {}", user_ids.join(", "));
     }
 
     println!();
@@ -242,47 +246,59 @@ fn validate_telegram_token(token: &str) -> bool {
     parts[0].chars().all(|c| c.is_ascii_digit()) && parts[1].len() >= 30
 }
 
-fn prompt_telegram_whitelist(verbose: bool) -> Result<Option<Vec<String>>> {
+fn prompt_telegram_whitelist(verbose: bool) -> Result<Vec<i64>> {
     println!();
-    println!("Telegram User ID (Whitelist)");
-    println!("To find your Telegram user ID:");
-    println!("  - Message @userinfobot on Telegram");
-    println!("  - Or search for 'my user id' on Telegram");
-    println!("This restricts bot access to specific users for security.");
+    println!("📱 Configuration Telegram - Sécurité");
+    println!("Pour sécuriser votre agent, vous devez spécifier qui peut interagir avec lui.");
+    println!();
+    println!("Pour trouver votre ID Telegram :");
+    println!("  1. Ouvrez Telegram et cherchez @userinfobot");
+    println!("  2. Cliquez sur 'Démarrer'");
+    println!("  3. Le bot affichera votre ID (ex: 123456789)");
+    println!("  4. Copiez cet ID ci-dessous");
 
-    let user_id = Text::new("Enter your Telegram user ID (or press Enter to skip):")
+    let user_id_input = Text::new("Votre ID Telegram:")
         .with_validator(|input: &str| {
-            if input.is_empty() || input.chars().all(|c| c.is_ascii_digit()) {
+            if input.is_empty() {
                 Ok(inquire::validator::Validation::Valid)
             } else {
-                Ok(inquire::validator::Validation::Invalid(
-                    "User ID must be numeric (e.g., 123456789)".into(),
-                ))
+                match input.parse::<i64>() {
+                    Ok(id) if id > 0 => Ok(inquire::validator::Validation::Valid),
+                    _ => Ok(inquire::validator::Validation::Invalid(
+                        "L'ID doit être un nombre positif (ex: 123456789)".into(),
+                    )),
+                }
             }
         })
-        .with_help_message("Press Enter without typing to skip this step")
+        .with_help_message("Entrez votre ID Telegram ou appuyez sur Entrée pour ignorer")
         .prompt()?;
 
-    if user_id.is_empty() {
+    if user_id_input.is_empty() {
         if verbose {
             tracing::debug!("User skipped Telegram whitelist configuration");
         }
-        return Ok(None);
+        println!(
+            "\n⚠️ Aucun ID fourni. La whitelist est vide - personne ne pourra accéder à l'agent."
+        );
+        return Ok(vec![]);
     }
+
+    let user_id = user_id_input.parse::<i64>().unwrap_or(0);
 
     if verbose {
         tracing::debug!(user_id = %user_id, "Telegram whitelist configured");
     }
 
-    Ok(Some(vec![user_id]))
+    println!("\n✅ ID {} ajouté à la whitelist", user_id);
+    println!("Seuls les utilisateurs dans cette liste pourront interagir avec l'agent.");
+    println!("Vous pouvez ajouter d'autres utilisateurs en modifiant ~/.miniclaw/config.json");
+
+    Ok(vec![user_id])
 }
 
 fn save_configuration(base_path: &Path, config: &Config, verbose: bool) -> Result<()> {
     // Skip if no configuration to save (user cancelled)
-    if config.api_key.is_none()
-        && config.telegram_token.is_none()
-        && config.telegram_whitelist.is_none()
-    {
+    if config.api_key.is_none() && config.telegram_token.is_none() && config.allow_from.is_empty() {
         if verbose {
             tracing::debug!("Skipping save - empty configuration (user cancelled)");
         }
@@ -308,8 +324,9 @@ fn save_configuration(base_path: &Path, config: &Config, verbose: bool) -> Resul
         if let Some(token) = &config.telegram_token {
             println!("  Telegram Token: {}", mask_secret(token));
         }
-        if let Some(whitelist) = &config.telegram_whitelist {
-            println!("  Whitelisted Users: {}", whitelist.join(", "));
+        if !config.allow_from.is_empty() {
+            let user_ids: Vec<String> = config.allow_from.iter().map(|id| id.to_string()).collect();
+            println!("  Whitelisted Users: {}", user_ids.join(", "));
         }
     }
 
@@ -332,10 +349,11 @@ fn display_completion_summary(config: &Config, verbose: bool) {
         println!("Telegram Bot: (not set)");
     }
 
-    if let Some(whitelist) = &config.telegram_whitelist {
-        println!("Whitelisted Users: {}", whitelist.join(", "));
+    if config.allow_from.is_empty() {
+        println!("Whitelisted Users: (empty - secure by default)");
     } else {
-        println!("Whitelisted Users: (not set)");
+        let user_ids: Vec<String> = config.allow_from.iter().map(|id| id.to_string()).collect();
+        println!("Whitelisted Users: {}", user_ids.join(", "));
     }
 
     println!();
@@ -437,5 +455,6 @@ mod tests {
         let config = result.unwrap();
         assert!(config.api_key.is_none());
         assert!(config.telegram_token.is_none());
+        assert!(config.allow_from.is_empty()); // Secure by default
     }
 }
