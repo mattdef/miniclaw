@@ -11,11 +11,13 @@ use std::path::PathBuf;
 pub mod long_term;
 pub mod daily_notes;
 pub mod short_term;
+pub mod ranker;
 pub mod types;
 
 pub use short_term::{ShortTermMemory, MemoryEntry as ShortTermMemoryEntry, MAX_SHORT_TERM_ENTRIES};
 pub use long_term::{LongTermMemory, LongTermMemoryEntry, MemorySection};
 pub use daily_notes::{DailyNoteEntry, DailyNoteSection, DEFAULT_RECENT_DAYS, DAILY_NOTE_RETENTION_DAYS};
+pub use ranker::{MemoryRanker, RankedMemory, MemorySource, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_RESULTS};
 
 use types::{MemoryEntry, MemoryError};
 
@@ -144,6 +146,34 @@ impl MemoryStore {
     /// * `content` - The content to add
     pub async fn add_short_term_memory(&self, content: String) {
         self.short_term.add_entry(content).await;
+    }
+
+    /// Searches memories across all sources (long-term and daily notes)
+    ///
+    /// Uses keyword matching to find relevant memories and returns
+    /// ranked results sorted by relevance score.
+    ///
+    /// By default, searches the last 30 days of daily notes and all
+    /// long-term memory entries.
+    ///
+    /// # Arguments
+    /// * `query` - The search query string
+    /// * `limit` - Maximum number of results to return (default: 5, max: 20)
+    ///
+    /// # Returns
+    /// * `Ok(Vec<RankedMemory>)` - Ranked search results
+    /// * `Err(MemoryError)` - If search fails
+    pub async fn search_memories(
+        &self,
+        query: &str,
+        limit: usize,
+    ) -> Result<Vec<RankedMemory>, MemoryError> {
+        let ranker = MemoryRanker::new(self.workspace_path.clone());
+        ranker.search_all(query, limit).await
+            .map_err(|e| {
+                tracing::error!(error = %e, "Failed to search memories");
+                e
+            })
     }
 }
 
@@ -328,5 +358,105 @@ mod tests {
         assert!(!old_file.exists());
         let today_file = memory_dir.join(format!("{}.md", Utc::now().format("%Y-%m-%d")));
         assert!(today_file.exists());
+    }
+
+    #[tokio::test]
+    async fn test_search_memories_empty() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let store = MemoryStore::new(workspace_path);
+
+        // Search with no memories
+        let results = store.search_memories("test", 5).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_memories_with_content() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let store = MemoryStore::new(workspace_path);
+
+        // Add some content to long-term memory
+        store.append_to_memory("project meeting with team".to_string()).await.unwrap();
+        store.append_to_memory("architecture review session".to_string()).await.unwrap();
+        store.append_to_memory("daily standup notes".to_string()).await.unwrap();
+
+        // Search for "project"
+        let results = store.search_memories("project", 5).await.unwrap();
+        assert!(!results.is_empty());
+        
+        // The "project meeting" entry should have score >= 1
+        let project_result = results.iter().find(|r| r.content.contains("project"));
+        assert!(project_result.is_some());
+        assert!(project_result.unwrap().score >= 1);
+    }
+
+    #[tokio::test]
+    async fn test_search_memories_with_daily_notes() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let store = MemoryStore::new(workspace_path);
+
+        // Create a daily note
+        store.create_daily_note("project planning session today".to_string()).await.unwrap();
+
+        // Search should find the daily note
+        let results = store.search_memories("project", 5).await.unwrap();
+        assert!(!results.is_empty());
+        
+        // Should find the daily note
+        let daily_result = results.iter().find(|r| r.source == crate::memory::MemorySource::DailyNote);
+        assert!(daily_result.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_search_memories_ranking() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let store = MemoryStore::new(workspace_path);
+
+        // Add entries with different relevance
+        store.append_to_memory("project meeting".to_string()).await.unwrap();
+        store.append_to_memory("project architecture review meeting".to_string()).await.unwrap();
+        store.append_to_memory("unrelated entry".to_string()).await.unwrap();
+
+        // Search for "project meeting"
+        let results = store.search_memories("project meeting", 5).await.unwrap();
+        
+        // Should return at least 2 results
+        assert!(results.len() >= 2);
+        
+        // First result should have higher score (contains both "project" and "meeting")
+        assert!(results[0].score >= results[1].score);
+    }
+
+    #[tokio::test]
+    async fn test_search_memories_empty_query() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let store = MemoryStore::new(workspace_path);
+
+        store.append_to_memory("some content".to_string()).await.unwrap();
+
+        // Empty query should return empty results
+        let results = store.search_memories("", 5).await.unwrap();
+        assert!(results.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_search_memories_limit() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let store = MemoryStore::new(workspace_path);
+
+        // Add multiple entries
+        for i in 0..10 {
+            store.append_to_memory(format!("test entry {}", i)).await.unwrap();
+        }
+
+        // Search with limit of 3
+        let results = store.search_memories("test", 3).await.unwrap();
+        assert_eq!(results.len(), 3);
     }
 }

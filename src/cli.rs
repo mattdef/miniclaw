@@ -164,6 +164,32 @@ pub enum MemoryCommands {
         #[arg(short, long, default_value = "7", value_name = "N")]
         days: usize,
     },
+
+    /// Search memories by relevance
+    ///
+    /// Searches across long-term memory and daily notes using keyword matching.
+    /// Results are ranked by relevance score and displayed with excerpts.
+    ///
+    /// # Examples
+    ///
+    /// Basic search:
+    /// ```bash
+    /// miniclaw memory rank -q "project meeting"
+    /// ```
+    ///
+    /// Search with custom limit:
+    /// ```bash
+    /// miniclaw memory rank -q "architecture" -n 10
+    /// ```
+    Rank {
+        /// Search query
+        #[arg(short, long, required = true, value_name = "QUERY")]
+        query: String,
+
+        /// Maximum number of results (default: 5)
+        #[arg(short = 'n', long, default_value = "5", value_name = "N")]
+        limit: usize,
+    },
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
@@ -274,6 +300,9 @@ fn handle_memory_command(command: MemoryCommands, config: &Config) -> anyhow::Re
             }
             MemoryCommands::Recent { days } => {
                 handle_memory_recent(days, config).await
+            }
+            MemoryCommands::Rank { query, limit } => {
+                handle_memory_rank(query, limit, config).await
             }
         }
     });
@@ -424,6 +453,82 @@ async fn handle_memory_recent(days: usize, _config: &Config) -> anyhow::Result<(
         println!("\x1b[90mTotal: {} entries across {} days\x1b[0m", 
             total_entries, 
             sections.len()
+        );
+    }
+
+    Ok(())
+}
+
+async fn handle_memory_rank(query: String, limit: usize, _config: &Config) -> anyhow::Result<()> {
+    use crate::memory::{MemoryStore, MAX_SEARCH_RESULTS, DEFAULT_SEARCH_LIMIT};
+
+    // Validate limit
+    let limit = if limit == 0 {
+        DEFAULT_SEARCH_LIMIT // Default if user passes 0
+    } else {
+        limit.min(MAX_SEARCH_RESULTS) // Cap at maximum
+    };
+
+    // Validate query length (max 1000 chars to prevent abuse)
+    if query.len() > 1000 {
+        anyhow::bail!("Query too long (max 1000 characters)");
+    }
+
+    let workspace_path = dirs::home_dir()
+        .map(|home| home.join(".miniclaw").join("workspace"))
+        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+
+    let memory_store = MemoryStore::new(workspace_path);
+
+    // Sanitize query for logging (truncate and escape)
+    let safe_query = if query.len() > 50 {
+        format!("{}...", &query[..50])
+    } else {
+        query.clone()
+    };
+    tracing::info!(query_length = query.len(), limit = limit, safe_query = %safe_query, "Searching memories");
+
+    // Search memories
+    let results = memory_store.search_memories(&query, limit).await
+        .map_err(|e| anyhow::anyhow!("Failed to search memories: {}", e))?;
+
+    // Display results
+    println!("\x1b[1;36m🔍 Search Results for: \"{}\"\x1b[0m\n", query);
+
+    if results.is_empty() {
+        println!("\x1b[33mNo memories found matching your query.\x1b[0m\n");
+        println!("\x1b[90m💡 Try:\x1b[0m");
+        println!("   \x1b[90m• Using broader search terms\x1b[0m");
+        println!("   \x1b[90m• Checking different keywords\x1b[0m");
+        println!("   \x1b[90m• Searching with fewer words\x1b[0m");
+    } else {
+        for (i, result) in results.iter().enumerate() {
+            let rank = i + 1;
+            let date_str = result.date
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "Unknown date".to_string());
+
+            // Choose icon based on source
+            let icon = match result.source {
+                crate::memory::MemorySource::LongTerm => "📅",
+                crate::memory::MemorySource::DailyNote => "📅",
+            };
+
+            println!("\x1b[1;32m{}.\x1b[0m \x1b[90m[Score: {}]\x1b[0m {} {} \x1b[90m({})\x1b[0m",
+                rank,
+                result.score,
+                icon,
+                date_str,
+                result.source
+            );
+            println!("   \x1b[0m{}\x1b[0m\n", result.excerpt);
+        }
+
+        let result_word = if results.len() == 1 { "memory" } else { "memories" };
+        println!("\x1b[90mFound {} relevant {} (showing top {})\x1b[0m",
+            results.len(),
+            result_word,
+            results.len().min(limit)
         );
     }
 
@@ -632,6 +737,50 @@ mod tests {
                 message,
                 model: None
             }) if message == "What is 2 + 2?"
+        ));
+    }
+
+    #[test]
+    fn test_memory_rank_command_parsing() {
+        let cli = Cli::parse_from(["miniclaw", "memory", "rank", "-q", "project meeting"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Memory {
+                command: MemoryCommands::Rank { query, limit: 5 }
+            }) if query == "project meeting"
+        ));
+    }
+
+    #[test]
+    fn test_memory_rank_with_long_query_flag() {
+        let cli = Cli::parse_from(["miniclaw", "memory", "rank", "--query", "architecture review"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Memory {
+                command: MemoryCommands::Rank { query, limit: 5 }
+            }) if query == "architecture review"
+        ));
+    }
+
+    #[test]
+    fn test_memory_rank_with_limit() {
+        let cli = Cli::parse_from(["miniclaw", "memory", "rank", "-q", "test", "-n", "10"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Memory {
+                command: MemoryCommands::Rank { query, limit: 10 }
+            }) if query == "test"
+        ));
+    }
+
+    #[test]
+    fn test_memory_rank_with_long_limit_flag() {
+        let cli = Cli::parse_from(["miniclaw", "memory", "rank", "--query", "test", "--limit", "3"]);
+        assert!(matches!(
+            cli.command,
+            Some(Commands::Memory {
+                command: MemoryCommands::Rank { query, limit: 3 }
+            }) if query == "test"
         ));
     }
 }
