@@ -29,7 +29,7 @@ pub async fn append_to_memory<F>(
     store_entry: Option<F>,
 ) -> Result<(String, MemoryEntry), MemoryError>
 where
-    F: FnOnce(MemoryEntry) -> (),
+    F: FnOnce(MemoryEntry),
 {
     // Validate content
     if content.trim().is_empty() {

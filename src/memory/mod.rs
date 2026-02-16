@@ -6,29 +6,25 @@
 //! - Daily notes (YYYY-MM-DD.md files)
 //! - Memory ranking and retrieval
 
-use std::collections::VecDeque;
 use std::path::PathBuf;
-use std::sync::Arc;
-
-use tokio::sync::RwLock;
 
 pub mod long_term;
 pub mod daily_notes;
+pub mod short_term;
 pub mod types;
+
+pub use short_term::{ShortTermMemory, MemoryEntry as ShortTermMemoryEntry, MAX_SHORT_TERM_ENTRIES};
 
 use types::{MemoryEntry, MemoryError};
 
-/// Maximum number of entries to keep in short-term memory
-const MAX_SHORT_TERM_ENTRIES: usize = 100;
-
 /// MemoryStore manages both short-term and long-term memory
 ///
-/// Uses Arc<RwLock<VecDeque>> for thread-safe concurrent access to memory entries.
+/// Uses ShortTermMemory for in-memory storage with thread-safe concurrent access.
 /// The store can be cloned to share the same memory storage across tasks.
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
-    /// Short-term memory: VecDeque of recent memory entries
-    entries: Arc<RwLock<VecDeque<MemoryEntry>>>,
+    /// Short-term memory module
+    short_term: ShortTermMemory,
     /// Workspace path for file operations
     workspace_path: PathBuf,
 }
@@ -40,12 +36,19 @@ impl MemoryStore {
     /// * `workspace_path` - The workspace directory for file operations
     pub fn new(workspace_path: PathBuf) -> Self {
         Self {
-            entries: Arc::new(RwLock::new(VecDeque::new())),
+            short_term: ShortTermMemory::new(),
             workspace_path,
         }
     }
 
+    /// Returns a reference to the short-term memory module
+    pub fn short_term(&self) -> &ShortTermMemory {
+        &self.short_term
+    }
+
     /// Appends content to long-term memory (MEMORY.md)
+    ///
+    /// Also adds the content to short-term memory.
     ///
     /// # Arguments
     /// * `content` - The content to store
@@ -54,26 +57,22 @@ impl MemoryStore {
     /// * `Ok(String)` - Path to the memory file
     /// * `Err(MemoryError)` - If storage fails
     pub async fn append_to_memory(&self, content: String) -> Result<String, MemoryError> {
-        let entries = self.entries.clone();
-        let (file_path, entry) = long_term::append_to_memory(
+        let (file_path, _entry) = long_term::append_to_memory(
             &self.workspace_path,
-            content,
-            None::<fn(MemoryEntry)>, // Don't use callback
+            content.clone(),
+            None::<fn(MemoryEntry)>,
         )
         .await?;
         
-        // Add to short-term memory directly
-        let mut entries_guard = entries.write().await;
-        entries_guard.push_back(entry);
-        if entries_guard.len() > MAX_SHORT_TERM_ENTRIES {
-            entries_guard.pop_front();
-        }
-        drop(entries_guard);
+        // Add to short-term memory using the new module
+        self.short_term.add_entry(content).await;
         
         Ok(file_path)
     }
 
     /// Creates a daily note
+    ///
+    /// Also adds the content to short-term memory.
     ///
     /// # Arguments
     /// * `content` - The content to store
@@ -82,21 +81,15 @@ impl MemoryStore {
     /// * `Ok(String)` - Path to the daily note file
     /// * `Err(MemoryError)` - If creation fails
     pub async fn create_daily_note(&self, content: String) -> Result<String, MemoryError> {
-        let entries = self.entries.clone();
-        let (file_path, entry) = daily_notes::create_daily_note(
+        let (file_path, _entry) = daily_notes::create_daily_note(
             &self.workspace_path,
-            content,
-            None::<fn(MemoryEntry)>, // Don't use callback
+            content.clone(),
+            None::<fn(MemoryEntry)>,
         )
         .await?;
         
-        // Add to short-term memory directly
-        let mut entries_guard = entries.write().await;
-        entries_guard.push_back(entry);
-        if entries_guard.len() > MAX_SHORT_TERM_ENTRIES {
-            entries_guard.pop_front();
-        }
-        drop(entries_guard);
+        // Add to short-term memory using the new module
+        self.short_term.add_entry(content).await;
         
         Ok(file_path)
     }
@@ -104,23 +97,17 @@ impl MemoryStore {
     /// Gets short-term memory entries
     ///
     /// # Returns
-    /// * `Vec<MemoryEntry>` - Copy of memory entries
-    pub async fn get_short_term_memory(&self) -> Vec<MemoryEntry> {
-        let entries = self.entries.read().await;
-        entries.iter().cloned().collect()
+    /// * `Vec<ShortTermMemoryEntry>` - Copy of memory entries
+    pub async fn get_short_term_memory(&self) -> Vec<ShortTermMemoryEntry> {
+        self.short_term.get_entries().await
     }
 
-    /// Adds entry to short-term memory
+    /// Adds content to short-term memory
     ///
     /// # Arguments
-    /// * `entry` - The memory entry to add
-    pub async fn add_short_term_memory(&self, entry: MemoryEntry) {
-        let mut entries = self.entries.write().await;
-        entries.push_back(entry);
-        // Keep only last MAX_SHORT_TERM_ENTRIES entries
-        if entries.len() > MAX_SHORT_TERM_ENTRIES {
-            entries.pop_front();
-        }
+    /// * `content` - The content to add
+    pub async fn add_short_term_memory(&self, content: String) {
+        self.short_term.add_entry(content).await;
     }
 }
 
@@ -143,14 +130,7 @@ mod tests {
         let workspace_path = temp_dir.path().to_path_buf();
         let store = MemoryStore::new(workspace_path);
 
-        let entry = MemoryEntry {
-            content: "Test content".to_string(),
-            timestamp: chrono::Utc::now(),
-            memory_type: types::MemoryType::LongTerm,
-            file_path: None,
-        };
-
-        store.add_short_term_memory(entry).await;
+        store.add_short_term_memory("Test content".to_string()).await;
         let memory = store.get_short_term_memory().await;
         assert_eq!(memory.len(), 1);
         assert_eq!(memory[0].content, "Test content");
@@ -164,18 +144,12 @@ mod tests {
 
         // Add more than 100 entries
         for i in 0..150 {
-            let entry = MemoryEntry {
-                content: format!("Content {}", i),
-                timestamp: chrono::Utc::now(),
-                memory_type: types::MemoryType::LongTerm,
-                file_path: None,
-            };
-            store.add_short_term_memory(entry).await;
+            store.add_short_term_memory(format!("Content {}", i)).await;
         }
 
         let memory = store.get_short_term_memory().await;
         assert_eq!(memory.len(), 100);
-        // Should keep the last 100 entries
+        // Should keep the last 100 entries (FIFO removes first 50)
         assert_eq!(memory[0].content, "Content 50");
         assert_eq!(memory[99].content, "Content 149");
     }
@@ -194,37 +168,19 @@ mod tests {
         // Spawn multiple tasks that add entries concurrently
         let handle1 = tokio::spawn(async move {
             for i in 0..10 {
-                let entry = MemoryEntry {
-                    content: format!("Task 1 - Entry {}", i),
-                    timestamp: chrono::Utc::now(),
-                    memory_type: types::MemoryType::LongTerm,
-                    file_path: None,
-                };
-                store1.add_short_term_memory(entry).await;
+                store1.add_short_term_memory(format!("Task 1 - Entry {}", i)).await;
             }
         });
 
         let handle2 = tokio::spawn(async move {
             for i in 0..10 {
-                let entry = MemoryEntry {
-                    content: format!("Task 2 - Entry {}", i),
-                    timestamp: chrono::Utc::now(),
-                    memory_type: types::MemoryType::LongTerm,
-                    file_path: None,
-                };
-                store2.add_short_term_memory(entry).await;
+                store2.add_short_term_memory(format!("Task 2 - Entry {}", i)).await;
             }
         });
 
         let handle3 = tokio::spawn(async move {
             for i in 0..10 {
-                let entry = MemoryEntry {
-                    content: format!("Task 3 - Entry {}", i),
-                    timestamp: chrono::Utc::now(),
-                    memory_type: types::MemoryType::LongTerm,
-                    file_path: None,
-                };
-                store3.add_short_term_memory(entry).await;
+                store3.add_short_term_memory(format!("Task 3 - Entry {}", i)).await;
             }
         });
 
@@ -268,5 +224,19 @@ mod tests {
         // Verify short-term memory was populated
         let memory = store.get_short_term_memory().await;
         assert_eq!(memory.len(), 10);
+    }
+
+    #[tokio::test]
+    async fn test_short_term_accessor() {
+        let temp_dir = tempdir().unwrap();
+        let workspace_path = temp_dir.path().to_path_buf();
+        let store = MemoryStore::new(workspace_path);
+
+        // Test direct access to short_term module
+        store.short_term().add_entry("Direct access".to_string()).await;
+        
+        assert_eq!(store.short_term().len().await, 1);
+        let entries = store.short_term().get_entries().await;
+        assert_eq!(entries[0].content, "Direct access");
     }
 }
