@@ -3,23 +3,23 @@
 //! The gateway runs as a background daemon, managing the ChatHub and SessionManager
 //! with automatic session persistence every 30 seconds.
 
+use crate::channels::{Channel, TelegramChannel};
 use crate::chat::ChatHub;
 use crate::config::Config;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tokio::signal;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 /// Runs the gateway daemon with auto-persistence and graceful shutdown.
 ///
 /// This function:
 /// 1. Initializes the SessionManager and loads existing sessions
 /// 2. Starts the auto-persistence background task (every 30 seconds)
-/// 3. Starts the ChatHub for message routing
+/// 3. Initializes the ChatHub and channels (Telegram, etc.)
 /// 4. Handles SIGTERM/SIGINT for graceful shutdown
 /// 5. Flushes all sessions to disk before exiting
-pub async fn run_gateway(_config: &Config) -> Result<()> {
+pub async fn run_gateway(config: &Config) -> Result<()> {
     info!("Starting miniclaw gateway daemon");
 
     // Determine sessions directory
@@ -72,6 +72,7 @@ pub async fn run_gateway(_config: &Config) -> Result<()> {
         }
         #[cfg(not(unix))]
         {
+            use tokio::signal;
             match signal::ctrl_c().await {
                 Ok(()) => {
                     info!("Received Ctrl+C, initiating graceful shutdown...");
@@ -88,6 +89,31 @@ pub async fn run_gateway(_config: &Config) -> Result<()> {
     // Initialize ChatHub
     let chat_hub = Arc::new(ChatHub::new());
     info!("ChatHub initialized");
+
+    // Initialize Telegram channel if configured
+    let telegram_channel = if let Some(token) = &config.telegram_token {
+        match TelegramChannel::new(token.clone()) {
+            Ok(channel) => {
+                match channel.start(Arc::clone(&chat_hub)).await {
+                    Ok(()) => {
+                        info!("Telegram channel initialized successfully");
+                        Some(channel)
+                    }
+                    Err(e) => {
+                        error!("Failed to start Telegram channel: {}. Gateway will continue without Telegram support.", e);
+                        None
+                    }
+                }
+            }
+            Err(e) => {
+                error!("Invalid Telegram token: {}. Check @BotFather (https://t.me/BotFather) for a valid token. Gateway will continue without Telegram support.", e);
+                None
+            }
+        }
+    } else {
+        warn!("No Telegram token configured. Set TELEGRAM_BOT_TOKEN environment variable or add telegram_token to config.json to enable Telegram support.");
+        None
+    };
 
     // Main gateway loop
     info!("Gateway daemon is running. Press Ctrl+C to stop.");
@@ -112,6 +138,14 @@ pub async fn run_gateway(_config: &Config) -> Result<()> {
 
     // Graceful shutdown sequence
     info!("Starting graceful shutdown sequence...");
+
+    // Shutdown Telegram channel if active
+    if let Some(channel) = telegram_channel {
+        info!("Shutting down Telegram channel...");
+        if let Err(e) = channel.shutdown().await {
+            error!("Error shutting down Telegram channel: {}", e);
+        }
+    }
 
     // Signal persistence task to stop
     info!("Signaling persistence task to stop...");
