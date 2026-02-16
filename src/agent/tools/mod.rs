@@ -3,6 +3,7 @@
 //! This module provides the tool trait, registry, and implementations
 //! for tools that the agent can use to perform actions.
 
+pub mod cron;
 pub mod exec;
 pub mod filesystem;
 pub mod message;

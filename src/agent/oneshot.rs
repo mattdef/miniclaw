@@ -110,6 +110,18 @@ pub async fn execute_one_shot(
         .register(Box::new(spawn_tool))
         .map_err(|e| anyhow::anyhow!("Failed to register spawn tool: {}", e))?;
 
+    // Register cron tool and start scheduler
+    let cron_scheduler = crate::cron::CronScheduler::new();
+    
+    // Start the scheduler background task
+    let scheduler_for_loop = cron_scheduler.clone();
+    let _scheduler_handle = scheduler_for_loop.start_scheduler();
+    
+    let cron_tool = crate::agent::tools::cron::CronTool::new(cron_scheduler);
+    tool_registry
+        .register(Box::new(cron_tool))
+        .map_err(|e| anyhow::anyhow!("Failed to register cron tool: {}", e))?;
+
     // Create a temporary session manager (not persisted)
     let temp_dir = std::env::temp_dir();
     let session_manager = Arc::new(tokio::sync::RwLock::new(

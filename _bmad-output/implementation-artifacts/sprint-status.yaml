@@ -87,11 +87,11 @@ development_status:
   6-3-exec-tool: done
   6-4-web-tool: done
   6-5-spawn-tool: done
-  epic-6-retrospective: optional
+  epic-6-retrospective: done
 
   # Epic 7: Tool System - Advanced Tools
-  epic-7: backlog
-  7-1-cron-tool-task-scheduling: backlog
+  epic-7: in-progress
+  7-1-cron-tool-task-scheduling: done
   7-2-write-memory-tool: backlog
   7-3-skill-management-tools: backlog
   epic-7-retrospective: optional
