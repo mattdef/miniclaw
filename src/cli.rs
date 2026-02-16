@@ -147,7 +147,16 @@ pub enum Commands {
     /// ```bash
     /// miniclaw --verbose gateway
     /// ```
-    Gateway,
+    ///
+    /// Start with PID file for systemd:
+    /// ```bash
+    /// miniclaw gateway --pid-file /run/miniclaw.pid
+    /// ```
+    Gateway {
+        /// Path to PID file (for systemd/docker)
+        #[arg(long, value_name = "PATH")]
+        pid_file: Option<std::path::PathBuf>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -241,9 +250,9 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
             tracing::debug!("Executing memory command");
             handle_memory_command(command, &config)
         }
-        Some(Commands::Gateway) => {
+        Some(Commands::Gateway { pid_file }) => {
             tracing::debug!("Executing gateway command");
-            handle_gateway(&config)
+            handle_gateway(&config, pid_file)
         }
         None => {
             tracing::debug!("No subcommand provided, showing help");
@@ -558,10 +567,18 @@ async fn handle_memory_rank(query: String, limit: usize, _config: &Config) -> an
     Ok(())
 }
 
-fn handle_gateway(config: &Config) -> anyhow::Result<()> {
+fn handle_gateway(config: &Config, pid_file: Option<std::path::PathBuf>) -> anyhow::Result<()> {
     use crate::gateway::run_gateway;
 
     tracing::info!("Starting gateway daemon command");
+
+    // Write PID file if specified (for systemd compatibility)
+    if let Some(ref path) = pid_file {
+        let pid = std::process::id();
+        std::fs::write(path, pid.to_string())
+            .with_context(|| format!("Failed to write PID file to {}", path.display()))?;
+        tracing::info!(pid = pid, path = %path.display(), "PID file written");
+    }
 
     // Create a tokio runtime for the async execution
     let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
@@ -571,6 +588,17 @@ fn handle_gateway(config: &Config) -> anyhow::Result<()> {
 
     // Explicitly shutdown the runtime to ensure clean resource cleanup
     rt.shutdown_timeout(std::time::Duration::from_secs(10));
+
+    // Clean up PID file on exit (if it was created)
+    if let Some(ref path) = pid_file {
+        if path.exists() {
+            if let Err(e) = std::fs::remove_file(path) {
+                tracing::warn!(path = %path.display(), error = %e, "Failed to remove PID file");
+            } else {
+                tracing::info!(path = %path.display(), "PID file removed");
+            }
+        }
+    }
 
     result
 }

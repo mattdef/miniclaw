@@ -3,12 +3,16 @@
 //! The gateway runs as a background daemon, managing the ChatHub and SessionManager
 //! with automatic session persistence every 30 seconds.
 
+use crate::agent::{AgentLoop, ContextBuilderImpl};
+use crate::agent::tools::ToolRegistry;
 use crate::channels::{Channel, TelegramChannel};
 use crate::chat::ChatHub;
 use crate::config::Config;
+use crate::providers::{ProviderConfig, ProviderFactory};
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use std::sync::Arc;
+use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 /// Runs the gateway daemon with auto-persistence and graceful shutdown.
@@ -17,10 +21,14 @@ use tracing::{error, info, warn};
 /// 1. Initializes the SessionManager and loads existing sessions
 /// 2. Starts the auto-persistence background task (every 30 seconds)
 /// 3. Initializes the ChatHub and channels (Telegram, etc.)
-/// 4. Handles SIGTERM/SIGINT for graceful shutdown
-/// 5. Flushes all sessions to disk before exiting
+/// 4. Initializes the AgentLoop for message processing
+/// 5. Handles SIGTERM/SIGINT for graceful shutdown
+/// 6. Flushes all sessions to disk before exiting
 pub async fn run_gateway(config: &Config) -> Result<()> {
-    info!("Starting miniclaw gateway daemon");
+    info!(
+        version = env!("CARGO_PKG_VERSION"),
+        "Starting miniclaw gateway daemon"
+    );
 
     // Determine sessions directory
     let sessions_dir = dirs::home_dir()
@@ -28,7 +36,7 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
         .context("Could not determine sessions directory")?;
 
     // Initialize SessionManager
-    let session_manager = Arc::new(SessionManager::new(sessions_dir));
+    let session_manager = Arc::new(SessionManager::new(sessions_dir.clone()));
     session_manager
         .initialize()
         .await
@@ -89,6 +97,61 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
     // Initialize ChatHub
     let chat_hub = Arc::new(ChatHub::new());
     info!("ChatHub initialized");
+
+    // Determine workspace directory for context builder
+    let workspace_path = dirs::home_dir()
+        .map(|home| home.join(".miniclaw").join("workspace"))
+        .context("Could not determine workspace directory")?;
+
+    // Create LLM provider
+    let api_key = config.api_key.clone().unwrap_or_default();
+    let model = config.model.clone().unwrap_or_else(|| "google/gemini-2.0-flash-exp:free".to_string());
+    
+    let provider_config = ProviderConfig::OpenRouter(
+        crate::providers::OpenRouterConfig::new(api_key.clone())
+            .with_model(model.clone())
+    );
+    let llm_provider = Arc::from(ProviderFactory::create(provider_config)
+        .context("Failed to create LLM provider")?);
+    
+    info!("LLM provider initialized with model: {}", model);
+
+    // Create context builder
+    let context_builder = Arc::new(ContextBuilderImpl::new(workspace_path)
+        .context("Failed to create context builder")?);
+    info!("Context builder initialized");
+
+    // Create tool registry
+    let tool_registry = Arc::new(ToolRegistry::new());
+    // TODO: Register tools here (exec, bash, etc.)
+    info!("Tool registry initialized");
+
+    // Create a new SessionManager wrapped in RwLock for AgentLoop
+    // Note: This is separate from the persistence SessionManager above
+    // In a future refactor, we should unify these
+    let agent_session_manager = Arc::new(RwLock::new(SessionManager::new(sessions_dir.clone())));
+    agent_session_manager.write().await.initialize().await
+        .context("Failed to initialize agent SessionManager")?;
+
+    // Initialize AgentLoop for message processing
+    let agent_loop = AgentLoop::with_model(
+        Arc::clone(&chat_hub),
+        llm_provider,
+        context_builder,
+        tool_registry,
+        agent_session_manager,
+        model.clone(),
+    );
+    info!("AgentLoop initialized");
+
+    // Spawn AgentLoop processing task
+    tokio::spawn(async move {
+        info!("AgentLoop processing task started");
+        if let Err(e) = agent_loop.run().await {
+            error!("AgentLoop error: {}", e);
+        }
+        info!("AgentLoop processing task stopped");
+    });
 
     // Initialize Telegram channel if configured
     let telegram_channel = if let Some(token) = &config.telegram_token {
