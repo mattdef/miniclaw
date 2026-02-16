@@ -97,18 +97,18 @@ development_status:
   epic-7-retrospective: done
 
   # Epic 8: Memory System
-  epic-8: in-progress
+  epic-8: done
   8-1-short-term-memory-in-memory: done
   8-2-long-term-memory-memory-md: done
   8-3-daily-notes: done
   8-4-memory-ranker: done
-  epic-8-retrospective: optional
+  epic-8-retrospective: done
 
   # Epic 9: Session Management
-  epic-9: backlog
-  9-1-session-manager-core: backlog
-  9-2-auto-persistence: backlog
-  9-3-session-cleanup: backlog
+  epic-9: in-progress
+  9-1-session-manager-core: done
+  9-2-auto-persistence: done
+  9-3-session-cleanup: review
   epic-9-retrospective: optional
 
   # Epic 10: Telegram Channel Integration

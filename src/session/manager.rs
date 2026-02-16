@@ -43,15 +43,21 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Gets an existing session or creates a new one.
+    ///
+    /// **Lock Scope Pattern**: Acquires read lock briefly in scoped block,
+    /// clones session data, then releases lock immediately via scope end.
+    /// Never holds lock during I/O operations (disk load).
     pub async fn get_or_create_session(&self, channel: &str, chat_id: &str) -> Result<Session> {
         let session_id = format!("{}_{}", channel, chat_id);
 
-        // Check if session exists in memory
+        // Check if session exists in memory (brief read lock)
         {
             let guard = self.sessions.read().await;
             if let Some(session) = guard.get(&session_id) {
-                return Ok(session.clone());
+                return Ok(session.clone()); // Clone then drop guard
             }
+            // Lock released here via scope end
         }
 
         // Try to load from disk
@@ -71,26 +77,41 @@ impl SessionManager {
         }
     }
 
+    /// Adds a message to an existing session.
+    ///
+    /// **Lock Scope Pattern**: Acquires write lock briefly, updates messages
+    /// vector and last_accessed timestamp, then releases lock immediately.
+    /// Lock is held only for HashMap access and message append.
     pub async fn add_message(&self, session_id: &str, message: Message) -> Result<()> {
         let mut guard = self.sessions.write().await;
 
         if let Some(session) = guard.get_mut(session_id) {
-            session.add_message(message);
+            session.add_message(message); // Update then drop guard
             Ok(())
         } else {
             anyhow::bail!("Session {} not found", session_id)
         }
+        // Lock released here via function end
     }
 
+    /// Retrieves a session by ID.
+    ///
+    /// **Lock Scope Pattern**: Acquires read lock, clones session data,
+    /// releases lock immediately. Returns cloned data to avoid holding lock.
     pub async fn get_session(&self, session_id: &str) -> Option<Session> {
         let guard = self.sessions.read().await;
-        guard.get(session_id).cloned()
+        guard.get(session_id).cloned() // Clone then drop guard
     }
 
+    /// Saves all sessions to disk.
+    ///
+    /// **Lock Scope Pattern**: Acquires read lock, clones all sessions,
+    /// explicitly drops lock, THEN performs I/O. Never holds lock during
+    /// disk operations to prevent blocking other threads.
     pub async fn save_all_sessions(&self) -> Result<()> {
         let guard = self.sessions.read().await;
         let sessions: Vec<Session> = guard.values().cloned().collect();
-        drop(guard);
+        drop(guard); // Explicit drop before I/O operations
 
         for session in sessions {
             if let Err(e) = self.persistence.save_session(&session).await {
@@ -102,32 +123,55 @@ impl SessionManager {
         Ok(())
     }
 
-    pub fn start_auto_persistence(&self) {
+    /// Starts a background task that auto-saves sessions every 30 seconds.
+    ///
+    /// **Lock Scope Pattern**: In the spawned task, acquires read lock,
+    /// clones all sessions, drops lock, THEN performs I/O. This prevents
+    /// blocking the main thread during periodic saves.
+    ///
+    /// Returns a JoinHandle for graceful shutdown coordination and a shutdown sender
+    /// to signal the task to stop.
+    pub fn start_auto_persistence(
+        &self,
+    ) -> (
+        tokio::task::JoinHandle<()>,
+        tokio::sync::mpsc::Sender<()>,
+    ) {
         let sessions = Arc::clone(&self.sessions);
         let persistence = Arc::clone(&self.persistence);
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let mut interval = interval(Duration::from_secs(PERSISTENCE_INTERVAL_SECS));
 
             loop {
-                interval.tick().await;
+                tokio::select! {
+                    _ = interval.tick() => {
+                        // Brief read lock, clone, release before I/O
+                        let guard = sessions.read().await;
+                        let sessions_vec: Vec<Session> = guard.values().cloned().collect();
+                        drop(guard);
 
-                let guard = sessions.read().await;
-                let sessions_vec: Vec<Session> = guard.values().cloned().collect();
-                drop(guard);
+                        for session in sessions_vec {
+                            if let Err(e) = persistence.save_session(&session).await {
+                                error!(
+                                    "Auto-persistence failed for session {}: {}",
+                                    session.session_id, e
+                                );
+                            }
+                        }
 
-                for session in sessions_vec {
-                    if let Err(e) = persistence.save_session(&session).await {
-                        error!(
-                            "Auto-persistence failed for session {}: {}",
-                            session.session_id, e
-                        );
+                        info!("Auto-persistence cycle completed");
+                    }
+                    _ = shutdown_rx.recv() => {
+                        info!("Persistence task received shutdown signal, completing...");
+                        break;
                     }
                 }
-
-                info!("Auto-persistence cycle completed");
             }
         });
+
+        (handle, shutdown_tx)
     }
 
     pub async fn session_count(&self) -> usize {
@@ -144,6 +188,19 @@ impl SessionManager {
     /// Saves a specific session to disk immediately
     pub async fn persist_session(&self, session: &Session) -> Result<()> {
         self.persistence.save_session(session).await
+    }
+
+    /// Starts the session cleanup background task
+    ///
+    /// This spawns a background task that runs daily to clean up expired sessions.
+    /// Sessions are considered expired if they haven't been accessed for 30 days.
+    ///
+    /// Returns a JoinHandle for graceful shutdown coordination and a shutdown sender
+    /// to signal the task to stop.
+    pub fn start_cleanup_task(&self) -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Sender<()>) {
+        use crate::session::cleanup::Cleanup;
+        let cleanup = Cleanup::new(self.persistence.sessions_dir.clone());
+        cleanup.start_cleanup_task()
     }
 }
 

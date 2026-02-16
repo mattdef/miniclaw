@@ -129,6 +129,25 @@ pub enum Commands {
         #[command(subcommand)]
         command: MemoryCommands,
     },
+
+    /// Start the gateway daemon
+    ///
+    /// Runs miniclaw as a background daemon with automatic session persistence.
+    /// The gateway manages the ChatHub for message routing and persists sessions
+    /// to disk every 30 seconds.
+    ///
+    /// # Examples
+    ///
+    /// Start the gateway:
+    /// ```bash
+    /// miniclaw gateway
+    /// ```
+    ///
+    /// Start with verbose logging:
+    /// ```bash
+    /// miniclaw --verbose gateway
+    /// ```
+    Gateway,
 }
 
 #[derive(Subcommand)]
@@ -221,6 +240,10 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Memory { command }) => {
             tracing::debug!("Executing memory command");
             handle_memory_command(command, &config)
+        }
+        Some(Commands::Gateway) => {
+            tracing::debug!("Executing gateway command");
+            handle_gateway(&config)
         }
         None => {
             tracing::debug!("No subcommand provided, showing help");
@@ -533,6 +556,23 @@ async fn handle_memory_rank(query: String, limit: usize, _config: &Config) -> an
     }
 
     Ok(())
+}
+
+fn handle_gateway(config: &Config) -> anyhow::Result<()> {
+    use crate::gateway::run_gateway;
+
+    tracing::info!("Starting gateway daemon command");
+
+    // Create a tokio runtime for the async execution
+    let rt = tokio::runtime::Runtime::new().context("Failed to create tokio runtime")?;
+
+    // Execute the gateway
+    let result = rt.block_on(async { run_gateway(config).await });
+
+    // Explicitly shutdown the runtime to ensure clean resource cleanup
+    rt.shutdown_timeout(std::time::Duration::from_secs(10));
+
+    result
 }
 
 pub fn handle_help(command: Option<String>) -> anyhow::Result<()> {
