@@ -104,6 +104,45 @@ pub enum Commands {
         #[arg(short = 'M', long, help = "Model to use for this request")]
         model: Option<String>,
     },
+
+    /// Memory management commands
+    ///
+    /// Read and manage long-term memory stored in MEMORY.md.
+    ///
+    /// # Examples
+    ///
+    /// Read today's entries (default):
+    /// ```bash
+    /// miniclaw memory read
+    /// ```
+    ///
+    /// Read all historical entries:
+    /// ```bash
+    /// miniclaw memory read --long
+    /// ```
+    ///
+    /// Read today's entries explicitly:
+    /// ```bash
+    /// miniclaw memory read --today
+    /// ```
+    Memory {
+        #[command(subcommand)]
+        command: MemoryCommands,
+    },
+}
+
+#[derive(Subcommand)]
+pub enum MemoryCommands {
+    /// Read memory entries
+    Read {
+        /// Show today's entries only (default)
+        #[arg(long, group = "filter")]
+        today: bool,
+
+        /// Show all historical entries
+        #[arg(long, group = "filter")]
+        long: bool,
+    },
 }
 
 pub fn run(cli: Cli) -> anyhow::Result<()> {
@@ -131,6 +170,10 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Commands::Agent { message, model }) => {
             tracing::debug!("Executing agent command");
             handle_agent(message, model, &config, cli.verbose)
+        }
+        Some(Commands::Memory { command }) => {
+            tracing::debug!("Executing memory command");
+            handle_memory_command(command, &config)
         }
         None => {
             tracing::debug!("No subcommand provided, showing help");
@@ -194,6 +237,107 @@ fn handle_agent(
             Err(e)
         }
     }
+}
+
+fn handle_memory_command(command: MemoryCommands, config: &Config) -> anyhow::Result<()> {
+    tracing::info!("Starting memory command");
+
+    // Create a tokio runtime for the async execution
+    let rt = tokio::runtime::Runtime::new()
+        .context("Failed to create tokio runtime")?;
+
+    let result = rt.block_on(async {
+        match command {
+            MemoryCommands::Read { today, long } => {
+                handle_memory_read(today, long, config).await
+            }
+        }
+    });
+
+    rt.shutdown_timeout(std::time::Duration::from_secs(5));
+
+    result
+}
+
+async fn handle_memory_read(today: bool, long: bool, _config: &Config) -> anyhow::Result<()> {
+    use crate::memory::MemoryStore;
+
+    let workspace_path = dirs::home_dir()
+        .map(|home| home.join(".miniclaw").join("workspace"))
+        .ok_or_else(|| anyhow::anyhow!("Could not determine home directory"))?;
+    
+    let memory_store = MemoryStore::new(workspace_path);
+
+    // Default to showing today if neither flag is set
+    let show_today = today || (!today && !long);
+
+    if show_today {
+        // Show today's entries with formatting
+        let entries = memory_store.long_term().read_today().await
+            .map_err(|e| anyhow::anyhow!("Failed to read memory: {}", e))?;
+
+        if entries.is_empty() {
+            println!("\x1b[33m📝 No entries for today.\x1b[0m");
+        } else {
+            let today = chrono::Utc::now().format("%Y-%m-%d");
+            println!("\x1b[1;36m## 📅 Today's Memory ({})\x1b[0m\n", today);
+            
+            for (i, entry) in entries.iter().enumerate() {
+                let time = entry.timestamp.format("%H:%M:%S UTC");
+                println!("\x1b[32m{:2}.\x1b[0m {} \x1b[90m({})\x1b[0m", 
+                    i + 1, 
+                    entry.content, 
+                    time
+                );
+            }
+            
+            println!("\n\x1b[90mTotal: {} entries\x1b[0m", entries.len());
+        }
+    } else if long {
+        // Show all entries with pagination
+        let sections = memory_store.long_term().read_all().await
+            .map_err(|e| anyhow::anyhow!("Failed to read memory: {}", e))?;
+
+        if sections.is_empty() {
+            println!("\x1b[33m📝 No memory entries found.\x1b[0m");
+        } else {
+            let total_entries: usize = sections.iter().map(|s| s.entries.len()).sum();
+            println!("\x1b[1;36m## 📚 All Memory Entries\x1b[0m");
+            println!("\x1b[90m{} sections, {} total entries\x1b[0m\n", sections.len(), total_entries);
+            
+            let mut entry_count = 0;
+            for section in &sections {
+                println!("\x1b[1;35m## 📅 {}\x1b[0m", section.date);
+                
+                for entry in &section.entries {
+                    entry_count += 1;
+                    let time = entry.timestamp.format("%H:%M:%S UTC");
+                    println!("  \x1b[32m•\x1b[0m {} \x1b[90m({})\x1b[0m", 
+                        entry.content,
+                        time
+                    );
+                    
+                    // Simple pagination: pause every 20 entries
+                    if entry_count % 20 == 0 && entry_count < total_entries {
+                        println!("\n\x1b[90m--- Press Enter to continue ({}/{} entries) ---\x1b[0m", 
+                            entry_count, 
+                            total_entries
+                        );
+                        let mut buffer = String::new();
+                        std::io::stdin().read_line(&mut buffer).ok();
+                    }
+                }
+                println!();
+            }
+            
+            println!("\x1b[90mTotal: {} entries across {} days\x1b[0m", 
+                total_entries, 
+                sections.len()
+            );
+        }
+    }
+
+    Ok(())
 }
 
 pub fn handle_help(command: Option<String>) -> anyhow::Result<()> {

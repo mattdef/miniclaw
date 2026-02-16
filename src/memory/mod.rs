@@ -14,17 +14,20 @@ pub mod short_term;
 pub mod types;
 
 pub use short_term::{ShortTermMemory, MemoryEntry as ShortTermMemoryEntry, MAX_SHORT_TERM_ENTRIES};
+pub use long_term::{LongTermMemory, LongTermMemoryEntry, MemorySection};
 
 use types::{MemoryEntry, MemoryError};
 
 /// MemoryStore manages both short-term and long-term memory
 ///
-/// Uses ShortTermMemory for in-memory storage with thread-safe concurrent access.
+/// Uses ShortTermMemory for in-memory storage and LongTermMemory for persistent storage.
 /// The store can be cloned to share the same memory storage across tasks.
 #[derive(Debug, Clone)]
 pub struct MemoryStore {
     /// Short-term memory module
     short_term: ShortTermMemory,
+    /// Long-term memory module
+    long_term: LongTermMemory,
     /// Workspace path for file operations
     workspace_path: PathBuf,
 }
@@ -35,8 +38,10 @@ impl MemoryStore {
     /// # Arguments
     /// * `workspace_path` - The workspace directory for file operations
     pub fn new(workspace_path: PathBuf) -> Self {
+        let long_term = LongTermMemory::new(&workspace_path);
         Self {
             short_term: ShortTermMemory::new(),
+            long_term,
             workspace_path,
         }
     }
@@ -44,6 +49,11 @@ impl MemoryStore {
     /// Returns a reference to the short-term memory module
     pub fn short_term(&self) -> &ShortTermMemory {
         &self.short_term
+    }
+
+    /// Returns a reference to the long-term memory module
+    pub fn long_term(&self) -> &LongTermMemory {
+        &self.long_term
     }
 
     /// Appends content to long-term memory (MEMORY.md)
@@ -57,17 +67,15 @@ impl MemoryStore {
     /// * `Ok(String)` - Path to the memory file
     /// * `Err(MemoryError)` - If storage fails
     pub async fn append_to_memory(&self, content: String) -> Result<String, MemoryError> {
-        let (file_path, _entry) = long_term::append_to_memory(
-            &self.workspace_path,
-            content.clone(),
-            None::<fn(MemoryEntry)>,
-        )
-        .await?;
+        // Use the unified LongTermMemory::append_entry method
+        self.long_term.append_entry(&content).await?;
         
-        // Add to short-term memory using the new module
+        // Add to short-term memory
         self.short_term.add_entry(content).await;
         
-        Ok(file_path)
+        // Return file path
+        let file_path = self.workspace_path.join("memory").join("MEMORY.md");
+        Ok(file_path.to_string_lossy().to_string())
     }
 
     /// Creates a daily note

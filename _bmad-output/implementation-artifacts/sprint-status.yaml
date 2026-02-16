@@ -99,7 +99,7 @@ development_status:
   # Epic 8: Memory System
   epic-8: in-progress
   8-1-short-term-memory-in-memory: done
-  8-2-long-term-memory-memory-md: backlog
+  8-2-long-term-memory-memory-md: done
   8-3-daily-notes: backlog
   8-4-memory-ranker: backlog
   epic-8-retrospective: optional
