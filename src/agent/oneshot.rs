@@ -66,7 +66,7 @@ pub async fn execute_one_shot(
     // Create a context builder with workspace path
     let workspace_path = dirs::home_dir()
         .map(|home| home.join(".miniclaw").join("workspace"))
-        .unwrap_or_else(|| std::env::temp_dir());
+        .unwrap_or_else(std::env::temp_dir);
 
     let context_builder: Arc<dyn ContextBuilder> = if workspace_path.exists() {
         Arc::new(
@@ -122,6 +122,27 @@ pub async fn execute_one_shot(
         .register(Box::new(cron_tool))
         .map_err(|e| anyhow::anyhow!("Failed to register cron tool: {}", e))?;
 
+    // Register memory tool with workspace directory
+    let workspace_path = dirs::home_dir()
+        .map(|home| home.join(".miniclaw").join("workspace"))
+        .unwrap_or_else(std::env::temp_dir);
+
+    // Create workspace directory if it doesn't exist
+    if !workspace_path.exists() {
+        std::fs::create_dir_all(&workspace_path)
+            .context("Failed to create workspace directory")?;
+    }
+
+    // Canonicalize for security
+    let canonical_workspace = std::fs::canonicalize(&workspace_path)
+        .context("Failed to canonicalize workspace path")?;
+
+    let memory_tool = crate::agent::tools::memory::MemoryTool::new(canonical_workspace)
+        .map_err(|e| anyhow::anyhow!("Failed to create memory tool: {}", e))?;
+    tool_registry
+        .register(Box::new(memory_tool))
+        .map_err(|e| anyhow::anyhow!("Failed to register memory tool: {}", e))?;
+
     // Create a temporary session manager (not persisted)
     let temp_dir = std::env::temp_dir();
     let session_manager = Arc::new(tokio::sync::RwLock::new(
@@ -166,6 +187,12 @@ pub struct MinimalContextBuilder;
 impl MinimalContextBuilder {
     pub fn new() -> Self {
         Self
+    }
+}
+
+impl Default for MinimalContextBuilder {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

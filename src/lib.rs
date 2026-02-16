@@ -3,6 +3,7 @@ pub mod chat;
 pub mod cli;
 pub mod config;
 pub mod cron;
+pub mod memory;
 pub mod providers;
 pub mod session;
 pub mod skills;

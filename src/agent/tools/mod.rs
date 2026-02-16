@@ -6,6 +6,7 @@
 pub mod cron;
 pub mod exec;
 pub mod filesystem;
+pub mod memory;
 pub mod message;
 pub mod spawn;
 pub mod types;
@@ -220,6 +221,7 @@ impl ToolRegistry {
     ///
     /// # Timeout
     /// Tool execution has a 30-second timeout by default
+    #[allow(clippy::await_holding_lock)]
     pub async fn execute_tool(
         &self,
         name: &str,
@@ -240,6 +242,7 @@ impl ToolRegistry {
     ///
     /// # Returns
     /// The tool's result as a string, or an error if execution fails or times out
+    #[allow(clippy::await_holding_lock)]
     pub async fn execute_tool_with_timeout(
         &self,
         name: &str,

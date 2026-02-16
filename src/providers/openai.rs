@@ -107,6 +107,7 @@ struct OpenRouterChoice {
     message: OpenRouterMessage,
     /// Reason for finishing
     #[serde(rename = "finish_reason")]
+    #[allow(dead_code)]
     finish_reason: Option<String>,
 }
 

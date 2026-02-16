@@ -204,9 +204,9 @@ impl FilesystemTool {
             message: format!("Failed to read directory entry: {}", e),
         })? {
             let file_type = entry.file_type().await.ok();
-            let entry_type = if file_type.map_or(false, |ft| ft.is_dir()) {
+            let entry_type = if file_type.is_some_and(|ft| ft.is_dir()) {
                 "directory"
-            } else if file_type.map_or(false, |ft| ft.is_file()) {
+            } else if file_type.is_some_and(|ft| ft.is_file()) {
                 "file"
             } else {
                 "other"

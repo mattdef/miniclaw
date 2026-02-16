@@ -697,4 +697,152 @@ async fn test_spawn_tool_blacklist_integration() {
     }
 }
 
+/// Integration test: Memory tool basic functionality
+#[tokio::test]
+async fn test_memory_tool_basic_functionality() {
+    use tempfile::tempdir;
+    use miniclaw::agent::tools::memory::MemoryTool;
+    
+    let temp_dir = tempdir().unwrap();
+    let workspace_path = temp_dir.path().to_path_buf();
+    
+    let memory_tool = MemoryTool::new(workspace_path).unwrap();
+    
+    // Test tool properties
+    assert_eq!(memory_tool.name(), "write_memory");
+    assert!(memory_tool.description().contains("memory"));
+    
+    // Test parameters schema
+    let params = memory_tool.parameters();
+    assert_eq!(params.get("type").unwrap(), "object");
+    
+    let properties = params.get("properties").unwrap();
+    assert!(properties.get("content").is_some());
+    assert!(properties.get("type").is_some());
+}
+
+/// Integration test: Memory tool long-term memory writing
+#[tokio::test]
+async fn test_memory_tool_long_term_memory() {
+    use tempfile::tempdir;
+    use miniclaw::agent::tools::memory::MemoryTool;
+    
+    let temp_dir = tempdir().unwrap();
+    let workspace_path = temp_dir.path().to_path_buf();
+    
+    let memory_tool = MemoryTool::new(workspace_path).unwrap();
+    
+    let mut args = HashMap::new();
+    args.insert("content".to_string(), json!("Test memory content"));
+    args.insert("type".to_string(), json!("long_term"));
+    
+    let ctx = ToolExecutionContext::default();
+    let result = memory_tool.execute(args, &ctx).await;
+    
+    assert!(result.is_ok());
+    let response = result.unwrap();
+    let response_value: Value = serde_json::from_str(&response).unwrap();
+    
+    assert_eq!(response_value.get("success").unwrap(), true);
+    assert!(response_value.get("message").unwrap().as_str().unwrap().contains("Memory updated"));
+    assert!(response_value.get("file_path").is_some());
+}
+
+/// Integration test: Memory tool daily notes
+#[tokio::test]
+async fn test_memory_tool_daily_notes() {
+    use tempfile::tempdir;
+    use miniclaw::agent::tools::memory::MemoryTool;
+    
+    let temp_dir = tempdir().unwrap();
+    let workspace_path = temp_dir.path().to_path_buf();
+    
+    let memory_tool = MemoryTool::new(workspace_path).unwrap();
+    
+    let mut args = HashMap::new();
+    args.insert("content".to_string(), json!("Test daily note"));
+    args.insert("type".to_string(), json!("daily"));
+    
+    let ctx = ToolExecutionContext::default();
+    let result = memory_tool.execute(args, &ctx).await;
+    
+    assert!(result.is_ok());
+    let response = result.unwrap();
+    let response_value: Value = serde_json::from_str(&response).unwrap();
+    
+    assert_eq!(response_value.get("success").unwrap(), true);
+    assert!(response_value.get("message").unwrap().as_str().unwrap().contains("Daily note created"));
+    assert!(response_value.get("file_path").is_some());
+}
+
+/// Integration test: Memory tool error handling
+#[tokio::test]
+async fn test_memory_tool_error_handling() {
+    use tempfile::tempdir;
+    use miniclaw::agent::tools::memory::MemoryTool;
+    
+    let temp_dir = tempdir().unwrap();
+    let workspace_path = temp_dir.path().to_path_buf();
+    
+    let memory_tool = MemoryTool::new(workspace_path).unwrap();
+    
+    // Test missing content parameter
+    let args = HashMap::new();
+    let ctx = ToolExecutionContext::default();
+    let result = memory_tool.execute(args, &ctx).await;
+    
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ToolError::InvalidArguments { tool, message } => {
+            assert_eq!(tool, "write_memory");
+            assert!(message.contains("content"));
+        }
+        _ => panic!("Expected InvalidArguments error"),
+    }
+    
+    // Test invalid memory type
+    let mut args = HashMap::new();
+    args.insert("content".to_string(), json!("Test content"));
+    args.insert("type".to_string(), json!("invalid_type"));
+    
+    let result = memory_tool.execute(args, &ctx).await;
+    
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ToolError::InvalidArguments { tool, message } => {
+            assert_eq!(tool, "write_memory");
+            assert!(message.contains("Invalid memory type"));
+        }
+        _ => panic!("Expected InvalidArguments error"),
+    }
+}
+
+/// Integration test: Memory tool empty content validation
+#[tokio::test]
+async fn test_memory_tool_empty_content() {
+    use tempfile::tempdir;
+    use miniclaw::agent::tools::memory::MemoryTool;
+    
+    let temp_dir = tempdir().unwrap();
+    let workspace_path = temp_dir.path().to_path_buf();
+    
+    let memory_tool = MemoryTool::new(workspace_path).unwrap();
+    
+    let mut args = HashMap::new();
+    args.insert("content".to_string(), json!(""));
+    
+    let ctx = ToolExecutionContext::default();
+    let result = memory_tool.execute(args, &ctx).await;
+    
+    assert!(result.is_err());
+    match result.unwrap_err() {
+        ToolError::InvalidArguments { tool, message } => {
+            assert_eq!(tool, "write_memory");
+            assert!(message.contains("empty"));
+        }
+        _ => panic!("Expected InvalidArguments error"),
+    }
+}
+
+
 

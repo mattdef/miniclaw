@@ -90,17 +90,15 @@ fn merge_env_variables(config: Config) -> Config {
         api_key: std::env::var("OPENROUTER_API_KEY")
             .ok()
             .or(std::env::var("MINICLAW_API_KEY").ok())
-            .or_else(|| config.api_key),
-        model: std::env::var("MINICLAW_MODEL")
-            .ok()
-            .or_else(|| config.model),
+            .or(config.api_key),
+        model: std::env::var("MINICLAW_MODEL").ok().or(config.model),
         telegram_token: std::env::var("TELEGRAM_BOT_TOKEN")
             .ok()
-            .or_else(|| config.telegram_token),
+            .or(config.telegram_token),
         telegram_whitelist: std::env::var("MINICLAW_TELEGRAM_WHITELIST")
             .ok()
             .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
-            .or_else(|| config.telegram_whitelist),
+            .or(config.telegram_whitelist),
         spawn_log_output: config.spawn_log_output,
     }
 }

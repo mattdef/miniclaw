@@ -122,7 +122,7 @@ impl ChatHub {
 
                 // Try again after waiting
                 match self.outbound_tx.try_send(msg) {
-                    Ok(_) => return Ok(()),
+                    Ok(_) => Ok(()),
                     Err(mpsc::error::TrySendError::Full(msg)) => {
                         tracing::warn!("Outbound buffer still full, dropping oldest message");
                         if let Ok(mut rx) = self.outbound_rx.try_write() {
