@@ -265,7 +265,7 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
 }
 
 fn print_version(config: &Config) {
-    tracing::info!("Displaying version information");
+    tracing::debug!("Displaying version information");
     println!("miniclaw {}", env!("CARGO_PKG_VERSION"));
     if let Some(model) = &config.model {
         println!("Default model: {}", model);
@@ -354,7 +354,7 @@ async fn handle_memory_read(today: bool, long: bool, _config: &Config) -> anyhow
     let memory_store = MemoryStore::new(workspace_path);
 
     // Default to showing today if neither flag is set
-    let show_today = today || (!today && !long);
+    let show_today = today || !long;
 
     if show_today {
         // Show today's entries with formatting

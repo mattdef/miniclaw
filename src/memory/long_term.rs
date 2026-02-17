@@ -343,25 +343,25 @@ impl LongTermMemory {
         let mut current_section: Option<MemorySection> = None;
 
         for line in content.lines() {
-            if line.starts_with("## ") {
+            if let Some(date_str) = line.strip_prefix("## ") {
                 // Save previous section if exists
                 if let Some(section) = current_section.take() {
                     sections.push(section);
                 }
 
                 // Parse date from header
-                let date_str = &line[3..];
                 if let Ok(date) = NaiveDate::parse_from_str(date_str, "%Y-%m-%d") {
                     current_section = Some(MemorySection {
                         date,
                         entries: Vec::new(),
                     });
                 }
-            } else if line.starts_with("- ") && current_section.is_some() {
-                // Parse bullet point entry with timestamp extraction
-                let entry_content = &line[2..];
-                let entry = LongTermMemoryEntry::parse_from_line(entry_content);
-                current_section.as_mut().unwrap().entries.push(entry);
+            } else if let Some(entry_content) = line.strip_prefix("- ") {
+                if let Some(ref mut section) = current_section {
+                    // Parse bullet point entry with timestamp extraction
+                    let entry = LongTermMemoryEntry::parse_from_line(entry_content);
+                    section.entries.push(entry);
+                }
             }
         }
 

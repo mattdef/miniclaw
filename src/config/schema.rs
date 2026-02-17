@@ -55,6 +55,48 @@ impl Config {
 
         Ok(())
     }
+
+    /// Check if OpenAI-compatible API key is configured (for logging purposes).
+    /// Returns true if set, without exposing the actual key value.
+    pub fn is_api_key_configured(&self) -> bool {
+        self.api_key.as_ref().is_some_and(|k| !k.is_empty())
+    }
+
+    /// Check if Telegram token is configured (for logging purposes).
+    /// Returns true if set, without exposing the actual token value.
+    pub fn is_telegram_configured(&self) -> bool {
+        self.telegram_token.as_ref().is_some_and(|t| !t.is_empty())
+    }
+
+    /// Check if model is explicitly configured.
+    pub fn is_model_configured(&self) -> bool {
+        self.model.as_ref().is_some_and(|m| !m.is_empty())
+    }
+
+    /// Get safe configuration summary for logging.
+    /// Never includes actual secret values.
+    pub fn get_safe_summary(&self) -> SafeConfigSummary {
+        SafeConfigSummary {
+            api_key_configured: self.is_api_key_configured(),
+            telegram_configured: self.is_telegram_configured(),
+            model_configured: self.is_model_configured(),
+            model: self.model.clone(),
+            allow_from_count: self.allow_from.len(),
+            spawn_log_output: self.spawn_log_output,
+        }
+    }
+}
+
+/// Safe configuration summary for logging.
+/// Contains no sensitive data - only boolean flags and safe metadata.
+#[derive(Debug)]
+pub struct SafeConfigSummary {
+    pub api_key_configured: bool,
+    pub telegram_configured: bool,
+    pub model_configured: bool,
+    pub model: Option<String>,
+    pub allow_from_count: usize,
+    pub spawn_log_output: bool,
 }
 
 #[cfg(test)]

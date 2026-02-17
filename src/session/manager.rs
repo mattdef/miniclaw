@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, interval};
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 pub const PERSISTENCE_INTERVAL_SECS: u64 = 30;
 
@@ -115,7 +115,11 @@ impl SessionManager {
 
         for session in sessions {
             if let Err(e) = self.persistence.save_session(&session).await {
-                error!("Failed to save session {}: {}", session.session_id, e);
+                error!(
+                    session_id = %session.session_id,
+                    error = %e,
+                    "Failed to save session"
+                );
             }
         }
 
@@ -152,13 +156,22 @@ impl SessionManager {
                         let sessions_vec: Vec<Session> = guard.values().cloned().collect();
                         drop(guard);
 
+                        debug!(session_count = sessions_vec.len(), "Auto-persistence cycle starting");
+
+                        let mut failed_count = 0;
                         for session in sessions_vec {
                             if let Err(e) = persistence.save_session(&session).await {
                                 error!(
-                                    "Auto-persistence failed for session {}: {}",
-                                    session.session_id, e
+                                    session_id = %session.session_id,
+                                    error = %e,
+                                    "Auto-persistence failed for session"
                                 );
+                                failed_count += 1;
                             }
+                        }
+
+                        if failed_count > 0 {
+                            warn!(failed_count = failed_count, "Some sessions failed to auto-persist");
                         }
 
                         info!("Auto-persistence cycle completed");

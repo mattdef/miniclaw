@@ -22,24 +22,55 @@ pub enum ConfigError {
 }
 
 pub fn load_config(cli_model: Option<String>, cli_config_path: Option<PathBuf>) -> Result<Config> {
+    tracing::debug!("Loading configuration");
+
     let mut config = Config::default();
 
     // Layer 1: Load from config file (~/.miniclaw/config.json)
-    let config_file = cli_config_path.or_else(get_default_config_path);
+    let config_file = cli_config_path.clone().or_else(get_default_config_path);
 
-    if let Some(path) = config_file {
+    if let Some(ref path) = config_file {
         if path.exists() {
-            config = merge_config_from_file(config, &path)?;
+            tracing::debug!(config_path = %path.display(), "Loading configuration from file");
+            config = merge_config_from_file(config, path)?;
+
+            let safe_summary = config.get_safe_summary();
+            tracing::debug!(
+                api_key_configured = safe_summary.api_key_configured,
+                telegram_configured = safe_summary.telegram_configured,
+                model = ?safe_summary.model,
+                allow_from_count = safe_summary.allow_from_count,
+                "Configuration loaded from file"
+            );
+        } else {
+            tracing::debug!(config_path = %path.display(), "Config file not found, using defaults");
         }
     }
 
     // Layer 2: Environment variables override
+    tracing::debug!("Applying environment variable overrides");
     config = merge_env_variables(config);
 
     // Layer 3: CLI flags override (highest precedence)
-    if let Some(model) = cli_model {
-        config.model = Some(model);
+    if let Some(ref model) = cli_model {
+        tracing::debug!(model = %model, "Applying CLI model override");
+        config.model = Some(model.clone());
     }
+
+    if cli_config_path.is_some() {
+        tracing::debug!("Applied CLI config path override");
+    }
+
+    let final_summary = config.get_safe_summary();
+    tracing::debug!(
+        api_key_configured = final_summary.api_key_configured,
+        telegram_configured = final_summary.telegram_configured,
+        model_configured = final_summary.model_configured,
+        model = ?final_summary.model,
+        allow_from_count = final_summary.allow_from_count,
+        spawn_log_output = final_summary.spawn_log_output,
+        "Configuration loaded successfully"
+    );
 
     Ok(config)
 }
@@ -59,8 +90,8 @@ fn merge_config_from_file(config: Config, path: &PathBuf) -> Result<Config> {
     let mode = permissions.mode() & 0o777;
 
     if mode != 0o600 {
-        tracing::warn!(
-            "Config file {:?} has permissions {:o}, expected 0600 - skipping",
+        tracing::error!(
+            "Config file {:?} has permissions {:o}, expected 0600 - skipping for security",
             path,
             mode
         );
@@ -103,8 +134,7 @@ fn merge_env_variables(config: Config) -> Config {
             .ok()
             .map(|s| {
                 s.split(',')
-                    .map(|s| s.trim().parse::<i64>().ok())
-                    .filter_map(|x| x)
+                    .filter_map(|s| s.trim().parse::<i64>().ok())
                     .filter(|&x| x > 0)
                     .collect()
             })

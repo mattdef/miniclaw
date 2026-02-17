@@ -3,7 +3,6 @@ use miniclaw::cli;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
-#[allow(dead_code)]
 fn init_logging(verbose: bool) {
     let filter_level = if verbose { Level::DEBUG } else { Level::INFO };
 
@@ -15,6 +14,7 @@ fn init_logging(verbose: bool) {
         .with_file(false)
         .with_line_number(false)
         .with_timer(tracing_subscriber::fmt::time::time())
+        .with_writer(std::io::stderr) // Output to stderr, not stdout
         .init();
 }
 
@@ -34,8 +34,10 @@ fn main() {
             // Initialize logging based on verbose flag
             init_logging(cli.verbose);
 
-            tracing::debug!("Verbose mode enabled");
-            tracing::info!("Starting miniclaw v{}", env!("CARGO_PKG_VERSION"));
+            if cli.verbose {
+                tracing::debug!("Verbose mode enabled");
+            }
+            tracing::debug!("Starting miniclaw v{}", env!("CARGO_PKG_VERSION"));
 
             if let Err(e) = cli::run(cli) {
                 eprintln!("Error: {}", e);
