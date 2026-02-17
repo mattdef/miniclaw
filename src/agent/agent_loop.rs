@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+use crate::agent::metrics::ResponseMetrics;
 use crate::agent::tools::ToolRegistry;
 use crate::chat::{ChatHub, InboundMessage};
 use crate::providers::{LlmMessage, LlmProvider, LlmResponse, LlmRole, LlmToolCall};
@@ -14,6 +15,12 @@ pub const LLM_TIMEOUT_SECS: u64 = 30;
 
 /// Maximum number of retries for transient LLM errors
 pub const MAX_LLM_RETRIES: u32 = 3;
+
+/// Target startup time in milliseconds (NFR-P3)
+pub const TARGET_STARTUP_TIME_MS: u128 = 100;
+
+/// Target response time (95th percentile) in milliseconds (NFR-P4)
+pub const TARGET_RESPONSE_TIME_P95_MS: u128 = 2000;
 
 /// Errors that can occur during agent loop execution
 #[derive(thiserror::Error, Debug)]
@@ -60,6 +67,7 @@ pub struct AgentLoop {
     session_manager: Arc<RwLock<SessionManager>>,
     max_iterations: u32,
     model: String,
+    response_metrics: Arc<ResponseMetrics>,
 }
 
 impl AgentLoop {
@@ -80,6 +88,7 @@ impl AgentLoop {
             session_manager,
             max_iterations: MAX_ITERATIONS,
             model,
+            response_metrics: Arc::new(ResponseMetrics::new()),
         }
     }
 
@@ -101,6 +110,7 @@ impl AgentLoop {
             session_manager,
             max_iterations: MAX_ITERATIONS,
             model,
+            response_metrics: Arc::new(ResponseMetrics::new()),
         }
     }
 
@@ -125,7 +135,10 @@ impl AgentLoop {
     pub async fn process_message(&self, message: InboundMessage) -> Result<String> {
         let session_id = format!("{}_{}", message.channel, message.chat_id);
 
-        tracing::info!(
+        // Start timing for response measurement
+        let msg_start = std::time::Instant::now();
+
+        tracing::debug!(
             session_id = %session_id,
             channel = %message.channel,
             chat_id = %message.chat_id,
@@ -142,17 +155,26 @@ impl AgentLoop {
             crate::session::Message::new("user".to_string(), message.content.clone());
         session.add_message(user_message);
 
-        // Build context
+        // Build context with timing
+        let context_start = std::time::Instant::now();
         let context = self
             .context_builder
             .build_context(&session, &message)
             .await
             .map_err(|e| AgentError::ContextBuildError(e.to_string()))?;
+        let context_time = context_start.elapsed();
 
         tracing::debug!(
             session_id = %session_id,
             context_messages = context.len(),
+            context_ms = context_time.as_millis(),
             "Context built successfully"
+        );
+        
+        tracing::trace!(
+            session_id = %session_id,
+            context_ms = context_time.as_millis(),
+            "Component timing: context assembly"
         );
 
         // Run the main agent loop
@@ -160,10 +182,42 @@ impl AgentLoop {
             .run_agent_loop(&session_id, &mut session, context)
             .await?;
 
-        tracing::info!(
-            session_id = %session_id,
-            "Message processing complete"
-        );
+        // Calculate and log response time
+        let response_time = msg_start.elapsed();
+        
+        // Record for percentile tracking
+        self.response_metrics.record(response_time);
+        
+        // Log individual response time and current metrics
+        if let (Some(p95), Some(avg)) = (
+            self.response_metrics.percentile_95(),
+            self.response_metrics.average(),
+        ) {
+            tracing::debug!(
+                response_ms = response_time.as_millis(),
+                p95_ms = p95,
+                avg_ms = avg,
+                sample_count = self.response_metrics.sample_count(),
+                session_id = %session_id,
+                "Message processed"
+            );
+            
+            // Warn if 95th percentile exceeds target
+            if p95 > TARGET_RESPONSE_TIME_P95_MS {
+                tracing::warn!(
+                    p95_ms = p95,
+                    target_ms = TARGET_RESPONSE_TIME_P95_MS,
+                    "Response time 95th percentile exceeds target"
+                );
+            }
+        } else {
+            // First few samples before we have enough data for percentile
+            tracing::debug!(
+                response_ms = response_time.as_millis(),
+                session_id = %session_id,
+                "Message processed"
+            );
+        }
 
         Ok(response)
     }
@@ -191,6 +245,9 @@ impl AgentLoop {
         mut context: Vec<LlmMessage>,
     ) -> Result<String> {
         let mut iteration: u32 = 0;
+        let loop_start = std::time::Instant::now();
+        let mut llm_time_ms: u128 = 0;
+        let mut tool_time_ms: u128 = 0;
 
         loop {
             // Check max iterations
@@ -213,9 +270,21 @@ impl AgentLoop {
 
             // Get available tools
             let tools = self.tool_registry.get_tool_definitions();
+            
+            // Time the LLM call
+            let llm_start = std::time::Instant::now();
 
             // Call LLM
             let llm_response = self.call_llm_with_retry(&context, &tools).await?;
+            let llm_elapsed = llm_start.elapsed().as_millis();
+            llm_time_ms += llm_elapsed;
+            
+            tracing::trace!(
+                session_id = %session_id,
+                iteration = iteration,
+                llm_ms = llm_elapsed,
+                "LLM call completed"
+            );
 
             // Check if we have tool calls
             if let Some(tool_calls) = llm_response.tool_calls.clone() {
@@ -242,8 +311,18 @@ impl AgentLoop {
                 .with_tool_calls(session_tool_calls);
                 session.add_message(assistant_message);
 
-                // Execute tools
+                // Execute tools with timing
+                let tool_start = std::time::Instant::now();
                 let tool_results = self.execute_tools(tool_calls).await;
+                let tool_elapsed = tool_start.elapsed().as_millis();
+                tool_time_ms += tool_elapsed;
+
+                tracing::trace!(
+                    session_id = %session_id,
+                    iteration = iteration,
+                    tool_ms = tool_elapsed,
+                    "Tool execution completed"
+                );
 
                 // Add tool results to context AND session
                 for (tool_id, result) in tool_results {
@@ -267,9 +346,14 @@ impl AgentLoop {
                 continue;
             } else {
                 // Text-only response - we're done
+                let total_time_ms = loop_start.elapsed().as_millis();
+
                 tracing::info!(
                     session_id = %session_id,
                     iterations = iteration,
+                    total_ms = total_time_ms,
+                    llm_ms = llm_time_ms,
+                    tool_ms = tool_time_ms,
                     "Agent loop complete with text response"
                 );
 

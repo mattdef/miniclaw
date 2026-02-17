@@ -13,7 +13,12 @@ use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 use tokio::sync::RwLock;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
+
+/// Memory threshold in MB for warning logs (NFR-P2)
+const MEMORY_WARNING_THRESHOLD_MB: u64 = 30;
+/// Memory check interval in seconds
+const MEMORY_CHECK_INTERVAL_SECS: u64 = 60;
 
 /// Runs the gateway daemon with auto-persistence and graceful shutdown.
 ///
@@ -22,9 +27,12 @@ use tracing::{error, info, warn};
 /// 2. Starts the auto-persistence background task (every 30 seconds)
 /// 3. Initializes the ChatHub and channels (Telegram, etc.)
 /// 4. Initializes the AgentLoop for message processing
-/// 5. Handles SIGTERM/SIGINT for graceful shutdown
-/// 6. Flushes all sessions to disk before exiting
+/// 5. Starts memory monitoring background task
+/// 6. Handles SIGTERM/SIGINT for graceful shutdown
+/// 7. Flushes all sessions to disk before exiting
 pub async fn run_gateway(config: &Config) -> Result<()> {
+    use sysinfo::{System, get_current_pid};
+
     info!(
         version = env!("CARGO_PKG_VERSION"),
         "Starting miniclaw gateway daemon"
@@ -153,6 +161,53 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
         info!("AgentLoop processing task stopped");
     });
 
+    // Spawn memory monitoring background task
+    let (memory_shutdown_tx, mut memory_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        let mut system = System::new_all();
+        let current_pid = get_current_pid().expect("Failed to get current PID");
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(MEMORY_CHECK_INTERVAL_SECS));
+        let mut previous_memory_mb: Option<u64> = None;
+        
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    system.refresh_all();
+                    if let Some(process) = system.process(current_pid) {
+                        let memory_mb = process.memory() / 1024; // Convert KB to MB
+                        
+                        // Calculate delta if we have previous measurement
+                        let delta_mb = previous_memory_mb.map(|prev| {
+                            memory_mb as i64 - prev as i64
+                        });
+                        
+                        // Log memory usage with appropriate level
+                        if memory_mb > MEMORY_WARNING_THRESHOLD_MB {
+                            warn!(
+                                memory_mb = memory_mb,
+                                threshold_mb = MEMORY_WARNING_THRESHOLD_MB,
+                                delta_mb = delta_mb,
+                                "Memory usage exceeds threshold"
+                            );
+                        } else {
+                            debug!(
+                                memory_mb = memory_mb,
+                                delta_mb = delta_mb,
+                                "Current memory usage"
+                            );
+                        }
+                        
+                        previous_memory_mb = Some(memory_mb);
+                    }
+                }
+                _ = memory_shutdown_rx.recv() => {
+                    debug!("Memory monitoring task received shutdown signal");
+                    break;
+                }
+            }
+        }
+    });
+
     // Initialize Telegram channel if configured
     let telegram_channel = if let Some(token) = &config.telegram_token {
         match TelegramChannel::new(token.clone(), config.allow_from.clone()) {
@@ -245,6 +300,10 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
             error!("Cleanup task did not complete within 5s timeout");
         }
     }
+
+    // Signal memory monitoring task to stop
+    info!("Signaling memory monitoring task to stop...");
+    let _ = memory_shutdown_tx.send(()).await;
 
     // Shutdown ChatHub
     info!("Shutting down ChatHub...");

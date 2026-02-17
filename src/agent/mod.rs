@@ -1,5 +1,6 @@
 pub mod agent_loop;
 pub mod context;
+pub mod metrics;
 pub mod oneshot;
 pub mod tools;
 
@@ -9,4 +10,5 @@ pub use crate::providers::{
 };
 pub use agent_loop::{AgentError, AgentLoop, ContextBuilder};
 pub use context::{ContextBuilderConfig, ContextBuilderImpl};
+pub use metrics::ResponseMetrics;
 pub use oneshot::execute_one_shot;

@@ -3,6 +3,20 @@ use miniclaw::cli;
 use tracing::Level;
 use tracing_subscriber::EnvFilter;
 
+/// Records the startup instant as early as possible
+static STARTUP_INSTANT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Records the startup instant. Call this as early as possible in main().
+pub fn record_startup_start() {
+    let _ = STARTUP_INSTANT.set(std::time::Instant::now());
+}
+
+/// Gets the startup duration from when `record_startup_start` was called.
+/// Returns None if startup was not recorded.
+pub fn get_startup_duration() -> Option<std::time::Duration> {
+    STARTUP_INSTANT.get().map(|start| start.elapsed())
+}
+
 fn init_logging(verbose: bool) {
     let filter_level = if verbose { Level::DEBUG } else { Level::INFO };
 
@@ -19,6 +33,9 @@ fn init_logging(verbose: bool) {
 }
 
 fn main() {
+    // Record startup time as early as possible
+    record_startup_start();
+
     // Parse CLI early to check verbose flag before full initialization
     match cli::Cli::try_parse() {
         Ok(cli) => {
@@ -38,6 +55,11 @@ fn main() {
                 tracing::debug!("Verbose mode enabled");
             }
             tracing::debug!("Starting miniclaw v{}", env!("CARGO_PKG_VERSION"));
+
+            // Log startup time (DEBUG level to avoid stderr noise on simple commands)
+            if let Some(duration) = get_startup_duration() {
+                tracing::debug!(startup_ms = duration.as_millis(), "Startup complete");
+            }
 
             if let Err(e) = cli::run(cli) {
                 eprintln!("Error: {}", e);
