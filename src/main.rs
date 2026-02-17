@@ -33,6 +33,38 @@ fn init_logging(verbose: bool) {
 }
 
 fn main() {
+    // Install panic handler FIRST to catch any early panics
+    std::panic::set_hook(Box::new(|panic_info| {
+        // Extract panic location
+        let location = panic_info
+            .location()
+            .map(|loc| format!("{}:{}:{}", loc.file(), loc.line(), loc.column()))
+            .unwrap_or_else(|| "unknown location".to_string());
+
+        // Extract panic message
+        let message = if let Some(s) = panic_info.payload().downcast_ref::<&str>() {
+            s.to_string()
+        } else if let Some(s) = panic_info.payload().downcast_ref::<String>() {
+            s.clone()
+        } else {
+            "unknown panic message".to_string()
+        };
+
+        // Log to stderr with structured format
+        eprintln!("PANIC at {}: {}", location, message);
+        eprintln!("This is a bug. Please report it with the above information.");
+
+        // If tracing is initialized, also log there
+        // Note: This may fail if panic occurred during tracing initialization
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tracing::error!(
+                location = %location,
+                message = %message,
+                "PANIC: Application panicked"
+            );
+        }));
+    }));
+
     // Record startup time as early as possible
     record_startup_start();
 
@@ -62,6 +94,7 @@ fn main() {
             }
 
             if let Err(e) = cli::run(cli) {
+                tracing::error!("Application error: {}", e);
                 eprintln!("Error: {}", e);
                 std::process::exit(1);
             }

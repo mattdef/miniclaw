@@ -152,20 +152,38 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
     );
     info!("AgentLoop initialized");
 
-    // Spawn AgentLoop processing task
+    // Spawn AgentLoop processing task with error recovery
     tokio::spawn(async move {
         info!("AgentLoop processing task started");
-        if let Err(e) = agent_loop.run().await {
-            error!("AgentLoop error: {}", e);
+        loop {
+            match agent_loop.run().await {
+                Ok(()) => {
+                    info!("AgentLoop processing task stopped normally");
+                    break;
+                }
+                Err(e) => {
+                    error!("AgentLoop error: {}. Attempting to recover...", e);
+                    // Graceful degradation: Log error and retry after delay
+                    // This allows the system to continue even if LLM provider fails temporarily
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    warn!("Restarting AgentLoop after error...");
+                }
+            }
         }
-        info!("AgentLoop processing task stopped");
+        info!("AgentLoop processing task terminated");
     });
 
     // Spawn memory monitoring background task
     let (memory_shutdown_tx, mut memory_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
     tokio::spawn(async move {
         let mut system = System::new_all();
-        let current_pid = get_current_pid().expect("Failed to get current PID");
+        let current_pid = match get_current_pid() {
+            Ok(pid) => pid,
+            Err(e) => {
+                error!("Failed to get current PID for memory monitoring: {}. Memory monitoring disabled.", e);
+                return;
+            }
+        };
         let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(MEMORY_CHECK_INTERVAL_SECS));
         let mut previous_memory_mb: Option<u64> = None;
         
@@ -269,8 +287,8 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
     info!("Signaling persistence task to stop...");
     let _ = persistence_shutdown.send(()).await;
 
-    // Wait for persistence task to complete with timeout
-    let timeout_duration = std::time::Duration::from_secs(10);
+    // Wait for persistence task to complete with timeout (5s as per spec)
+    let timeout_duration = std::time::Duration::from_secs(5);
     match tokio::time::timeout(timeout_duration, persistence_handle).await {
         Ok(Ok(())) => {
             info!("Persistence task completed gracefully");
@@ -279,7 +297,7 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
             error!("Persistence task panicked: {}", e);
         }
         Err(_) => {
-            error!("Persistence task did not complete within 10s timeout");
+            error!("Persistence task did not complete within 5s timeout");
         }
     }
 
@@ -337,7 +355,10 @@ async fn run_chat_hub(chat_hub: Arc<ChatHub>) -> Result<()> {
 /// Triggered persistence for testing purposes.
 #[cfg(test)]
 pub async fn trigger_persistence(session_manager: &SessionManager) -> Result<()> {
-    session_manager.save_all_sessions().await
+    session_manager
+        .save_all_sessions()
+        .await
+        .map_err(|e| anyhow::anyhow!("Persistence error: {}", e))
 }
 
 #[cfg(test)]

@@ -1,12 +1,15 @@
 use crate::session::persistence::Persistence;
 use crate::session::types::{Message, Session};
-use anyhow::Result;
+use crate::utils::MiniClawError;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 use tokio::time::{Duration, interval};
 use tracing::{debug, error, info, warn};
+
+/// Type alias for Results in this module
+type Result<T> = std::result::Result<T, MiniClawError>;
 
 pub const PERSISTENCE_INTERVAL_SECS: u64 = 30;
 
@@ -89,7 +92,10 @@ impl SessionManager {
             session.add_message(message); // Update then drop guard
             Ok(())
         } else {
-            anyhow::bail!("Session {} not found", session_id)
+            Err(MiniClawError::session_persistence(
+                session_id,
+                "Session not found",
+            ))
         }
         // Lock released here via function end
     }

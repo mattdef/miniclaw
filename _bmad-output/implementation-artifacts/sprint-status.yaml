@@ -123,7 +123,7 @@ development_status:
   11-1-structured-logging-system: done
   11-2-output-stream-management: done
   11-3-performance-metrics: done
-  11-4-error-handling-and-reliability: backlog
+  11-4-error-handling-and-reliability: done
   epic-11-retrospective: optional
 
 # TECHNICAL DECISIONS & NOTES:

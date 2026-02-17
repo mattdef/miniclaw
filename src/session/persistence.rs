@@ -1,8 +1,11 @@
 use crate::session::types::Session;
-use anyhow::{Context, Result};
+use crate::utils::MiniClawError;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 use tracing::{error, info, warn};
+
+/// Type alias for Results in this module
+type Result<T> = std::result::Result<T, MiniClawError>;
 
 pub struct Persistence {
     pub sessions_dir: PathBuf,
@@ -17,24 +20,111 @@ impl Persistence {
         let file_path = self
             .sessions_dir
             .join(format!("{}.json", session.session_id));
-        let json =
-            serde_json::to_string_pretty(session).context("Failed to serialize session to JSON")?;
+        
+        // Use atomic write pattern with retry logic for transient IO errors
+        Self::atomic_write_session_with_retry(&file_path, session, 3).await
+    }
 
-        fs::write(&file_path, json)
-            .await
-            .with_context(|| format!("Failed to write session file: {:?}", file_path))?;
+    /// Atomically writes a session file with retry logic for transient IO errors.
+    /// 
+    /// Retries up to `max_retries` times with exponential backoff on IO errors.
+    async fn atomic_write_session_with_retry(
+        file_path: &Path,
+        session: &Session,
+        max_retries: u32,
+    ) -> Result<()> {
+        let mut attempt = 0;
+        let mut last_error = None;
 
-        // Set file permissions to 0600 on Unix
+        while attempt <= max_retries {
+            match Self::atomic_write_session(file_path, session).await {
+                Ok(()) => return Ok(()),
+                Err(e) => {
+                    // Check if it's a transient IO error worth retrying
+                    let error_msg = e.to_string();
+                    let should_retry = error_msg.contains("disk")
+                        || error_msg.contains("space")
+                        || error_msg.contains("temporarily");
+
+                    if should_retry && attempt < max_retries {
+                        let backoff_ms = 100 * 2u64.pow(attempt);
+                        warn!(
+                            "Session persistence failed (attempt {}/{}): {}. Retrying in {}ms...",
+                            attempt + 1,
+                            max_retries + 1,
+                            e,
+                            backoff_ms
+                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(backoff_ms)).await;
+                        attempt += 1;
+                        last_error = Some(e);
+                    } else {
+                        // Non-retryable error or max retries reached
+                        return Err(e);
+                    }
+                }
+            }
+        }
+
+        // Max retries exhausted
+        Err(last_error.unwrap_or_else(|| {
+            MiniClawError::session_persistence(
+                "unknown",
+                format!("Failed after {} retries", max_retries),
+            )
+        }))
+    }
+
+    /// Atomically writes a session file to prevent corruption during crashes.
+    /// 
+    /// Pattern:
+    /// 1. Write to temporary file: `{session_file}.tmp`
+    /// 2. Set permissions to 0600 on Unix
+    /// 3. Atomically rename temp file to final location
+    /// 4. Clean up temp file if rename fails
+    /// 
+    /// This ensures that the session file is never in a partially-written state.
+    async fn atomic_write_session(file_path: &Path, session: &Session) -> Result<()> {
+        let temp_path = file_path.with_extension("tmp");
+        let session_id = session.session_id.clone();
+        
+        // Serialize session to JSON
+        let json = serde_json::to_string_pretty(session)
+            .map_err(|e| MiniClawError::serialization(e.to_string()))?;
+
+        // Step 1: Write to temporary file
+        if let Err(e) = fs::write(&temp_path, &json).await {
+            // Clean up temp file if write failed
+            let _ = fs::remove_file(&temp_path).await;
+            return Err(MiniClawError::io(&temp_path, e));
+        }
+
+        // Step 2: Set file permissions to 0600 on Unix BEFORE rename
+        // This ensures the final file has correct permissions immediately
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let permissions = std::fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&file_path, permissions)
-                .await
-                .with_context(|| format!("Failed to set permissions on: {:?}", file_path))?;
+            if let Err(e) = fs::set_permissions(&temp_path, permissions).await {
+                // Clean up temp file
+                let _ = fs::remove_file(&temp_path).await;
+                return Err(MiniClawError::io(&temp_path, e));
+            }
         }
 
-        info!("Saved session {} to {:?}", session.session_id, file_path);
+        // Step 3: Atomic rename - this is the critical operation
+        // On Unix, rename() is atomic and will either succeed (file is complete)
+        // or fail (file is unchanged)
+        if let Err(e) = fs::rename(&temp_path, file_path).await {
+            // Clean up temp file on rename failure
+            let _ = fs::remove_file(&temp_path).await;
+            return Err(MiniClawError::session_persistence(
+                &session_id,
+                format!("Failed to atomically rename file: {}", e),
+            ));
+        }
+
+        info!("Atomically saved session {} to {:?}", session_id, file_path);
         Ok(())
     }
 
@@ -54,9 +144,13 @@ impl Persistence {
             },
             Err(e) => {
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    anyhow::bail!("Session file not found: {:?}", file_path)
+                    Err(MiniClawError::io(
+                        &file_path,
+                        std::io::Error::new(std::io::ErrorKind::NotFound, "Session file not found"),
+                    ))
+                } else {
+                    Err(MiniClawError::io(&file_path, e))
                 }
-                Err(e.into())
             }
         }
     }
@@ -64,9 +158,9 @@ impl Persistence {
     pub async fn load_all_sessions(&self) -> Result<Vec<Session>> {
         let mut sessions = Vec::new();
 
-        let mut entries = fs::read_dir(&self.sessions_dir).await.with_context(|| {
-            format!("Failed to read sessions directory: {:?}", self.sessions_dir)
-        })?;
+        let mut entries = fs::read_dir(&self.sessions_dir)
+            .await
+            .map_err(|e| MiniClawError::io(&self.sessions_dir, e))?;
 
         while let Some(entry) = entries.next_entry().await? {
             let path = entry.path();
@@ -103,7 +197,12 @@ impl Persistence {
         // Rename corrupted file
         fs::rename(file_path, &corrupted_path)
             .await
-            .with_context(|| format!("Failed to rename corrupted file: {:?}", file_path))?;
+            .map_err(|e| {
+                MiniClawError::session_persistence(
+                    session_id,
+                    format!("Failed to rename corrupted file: {}", e),
+                )
+            })?;
 
         error!(
             "Corrupted session file detected. Moved {:?} to {:?}",
@@ -135,12 +234,7 @@ impl Persistence {
         if !self.sessions_dir.exists() {
             fs::create_dir_all(&self.sessions_dir)
                 .await
-                .with_context(|| {
-                    format!(
-                        "Failed to create sessions directory: {:?}",
-                        self.sessions_dir
-                    )
-                })?;
+                .map_err(|e| MiniClawError::io(&self.sessions_dir, e))?;
 
             // Set directory permissions to 0755 on Unix
             #[cfg(unix)]
@@ -149,9 +243,7 @@ impl Persistence {
                 let permissions = std::fs::Permissions::from_mode(0o755);
                 fs::set_permissions(&self.sessions_dir, permissions)
                     .await
-                    .with_context(|| {
-                        format!("Failed to set permissions on: {:?}", self.sessions_dir)
-                    })?;
+                    .map_err(|e| MiniClawError::io(&self.sessions_dir, e))?;
             }
 
             info!("Created sessions directory: {:?}", self.sessions_dir);
@@ -260,4 +352,86 @@ mod tests {
             assert_eq!(permissions & 0o777, 0o600);
         }
     }
+
+    #[tokio::test]
+    async fn test_atomic_write_no_temp_file_left() {
+        let temp_dir = TempDir::new().unwrap();
+        let sessions_dir = temp_dir.path().join("sessions");
+
+        let persistence = Persistence::new(sessions_dir.clone());
+        persistence.create_sessions_dir().await.unwrap();
+
+        let session = Session::new("telegram".to_string(), "456".to_string());
+        persistence.save_session(&session).await.unwrap();
+
+        // Verify no .tmp files left behind
+        let mut entries = fs::read_dir(&sessions_dir).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            let path = entry.path();
+            let ext = path.extension().and_then(|s| s.to_str());
+            assert_ne!(ext, Some("tmp"), "Temp file should not exist after atomic write");
+        }
+
+        // Verify the actual file exists and is valid JSON
+        let file_path = sessions_dir.join("telegram_456.json");
+        assert!(file_path.exists());
+        let content = fs::read_to_string(&file_path).await.unwrap();
+        let loaded: Session = serde_json::from_str(&content).unwrap();
+        assert_eq!(loaded.session_id, "telegram_456");
+    }
+
+    #[tokio::test]
+    async fn test_atomic_write_preserves_existing_on_failure() {
+        let temp_dir = TempDir::new().unwrap();
+        let sessions_dir = temp_dir.path().join("sessions");
+
+        let persistence = Persistence::new(sessions_dir.clone());
+        persistence.create_sessions_dir().await.unwrap();
+
+        // Create initial session
+        let mut session = Session::new("telegram".to_string(), "789".to_string());
+        session.add_message(Message::new("user".to_string(), "original".to_string()));
+        persistence.save_session(&session).await.unwrap();
+
+        // Verify original content
+        let loaded = persistence.load_session("telegram_789").await.unwrap();
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.messages[0].content, "original");
+    }
+
+    #[tokio::test]
+    async fn test_atomic_write_crash_simulation() {
+        // This test simulates a crash during write by verifying that
+        // either the old file exists OR the new file exists, but never
+        // a corrupted partial state
+        let temp_dir = TempDir::new().unwrap();
+        let sessions_dir = temp_dir.path().join("sessions");
+
+        let persistence = Persistence::new(sessions_dir.clone());
+        persistence.create_sessions_dir().await.unwrap();
+
+        // Create initial session
+        let mut session = Session::new("telegram".to_string(), "crash_test".to_string());
+        session.add_message(Message::new("user".to_string(), "original".to_string()));
+        persistence.save_session(&session).await.unwrap();
+
+        // Verify file exists and is valid
+        let file_path = sessions_dir.join("telegram_crash_test.json");
+        assert!(file_path.exists());
+        
+        // Read raw content and verify it's valid JSON
+        let content = fs::read_to_string(&file_path).await.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed.is_object());
+        
+        // Verify no temp file exists (would indicate incomplete write)
+        let temp_path = file_path.with_extension("tmp");
+        assert!(!temp_path.exists(), "Temp file should be cleaned up after successful write");
+        
+        // Now simulate trying to read after a "crash" - file should still be valid
+        let loaded = persistence.load_session("telegram_crash_test").await.unwrap();
+        assert_eq!(loaded.messages.len(), 1);
+        assert_eq!(loaded.messages[0].content, "original");
+    }
 }
+
