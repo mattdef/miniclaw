@@ -57,7 +57,7 @@ async fn test_session_persistence_roundtrip() {
         manager
             .add_message(
                 &session.session_id,
-                Message::tool_result("Tool call_1 result: file1.txt, file2.txt".to_string()),
+                Message::tool_result("call_1".to_string(), "Tool call_1 result: file1.txt, file2.txt".to_string()),
             )
             .await
             .unwrap();
@@ -302,7 +302,7 @@ async fn test_tool_calls_survive_context_builder_pipeline() {
         manager
             .add_message(
                 &session.session_id,
-                Message::tool_result("Tool call_fs_1 result: file1.txt, file2.txt".to_string()),
+                Message::tool_result("call_fs_1".to_string(), "Tool call_fs_1 result: file1.txt, file2.txt".to_string()),
             )
             .await
             .unwrap();

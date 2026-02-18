@@ -329,6 +329,17 @@ impl ContextBuilderImpl {
             0
         };
 
+        // If the first message we would include is a tool_result, skip forward until
+        // we reach a non-tool_result boundary.  This prevents orphaned tool result
+        // messages from appearing without their preceding assistant+tool_calls message.
+        let skip_count = {
+            let mut sc = skip_count;
+            while sc < messages.len() && messages[sc].role == "tool_result" {
+                sc += 1;
+            }
+            sc
+        };
+
         messages
             .iter()
             .skip(skip_count)
@@ -356,14 +367,67 @@ impl ContextBuilderImpl {
                             })
                             .collect()
                     }),
-                    tool_call_id: None,
+                    tool_call_id: msg.tool_call_id.clone(),
                 }
             })
             .collect()
     }
 
-    /// Truncates context to fit within token limit
-    /// Strategy: Remove oldest history messages first, never remove system or current message
+    /// Removes any tool result messages that are not immediately preceded by an assistant
+    /// message with tool_calls.  This is a safety net for edge cases where the truncation
+    /// or session-eviction logic might have left orphaned tool results in the context.
+    ///
+    /// The OpenAI API rejects requests where a `role: "tool"` message does not follow a
+    /// `role: "assistant"` message that contains `tool_calls`.
+    fn sanitize_tool_pairs(messages: Vec<LlmMessage>) -> Vec<LlmMessage> {
+        let mut result: Vec<LlmMessage> = Vec::with_capacity(messages.len());
+
+        for msg in messages {
+            if msg.role == LlmRole::Tool {
+                // Only keep this tool result if the previous message is an assistant
+                // message that has tool_calls.
+                let preceded_by_tool_calls = result
+                    .last()
+                    .map(|prev| {
+                        prev.role == LlmRole::Assistant && prev.tool_calls.is_some()
+                    })
+                    .unwrap_or(false);
+
+                if !preceded_by_tool_calls {
+                    tracing::warn!(
+                        "Dropping orphaned tool result message (no preceding assistant+tool_calls)"
+                    );
+                    continue;
+                }
+            }
+            result.push(msg);
+        }
+
+        // An assistant message with tool_calls must always be followed by at least one
+        // tool result.  If the last message in the list is such an assistant message,
+        // we need to remove it too (it can't be the final message).
+        while result
+            .last()
+            .map(|m| m.role == LlmRole::Assistant && m.tool_calls.is_some())
+            .unwrap_or(false)
+        {
+            let dropped = result.pop().unwrap();
+            tracing::warn!(
+                "Dropped trailing assistant+tool_calls message with no following tool result"
+            );
+            // If the message before the dropped one is now an orphaned tool result, keep
+            // going — the while condition will catch it on the next iteration only if it
+            // itself also has tool_calls (which would be unusual).
+            let _ = dropped;
+        }
+
+        result
+    }
+
+    /// Strategy: Remove oldest history messages first, never remove system or current message.
+    /// Tool-interaction groups (assistant+tool_calls followed by one or more tool results) are
+    /// always removed together to avoid orphaned tool result messages that would be rejected by
+    /// the OpenAI API.
     fn truncate_context(
         &self,
         mut messages: Vec<LlmMessage>,
@@ -381,7 +445,7 @@ impl ContextBuilderImpl {
                 break;
             }
 
-            // Find oldest non-system, non-current message to remove
+            // Find the index of the oldest non-system, non-current message that can be removed.
             let removable_index = messages
                 .iter()
                 .enumerate()
@@ -398,6 +462,33 @@ impl ContextBuilderImpl {
                     tokens = self.estimate_tokens(&removed.content),
                     "Truncated message from context"
                 );
+
+                // After removing a message, also remove any immediately following tool
+                // result messages that are now orphaned (i.e. their preceding
+                // assistant+tool_calls message was just deleted).
+                while messages
+                    .get(idx)
+                    .map(|m| m.role == LlmRole::Tool)
+                    .unwrap_or(false)
+                {
+                    // Only remove if the message at `idx-1` is NOT an assistant message
+                    // with tool_calls (which would mean a different, still-present group owns it).
+                    let still_has_parent = idx > 0
+                        && messages
+                            .get(idx - 1)
+                            .map(|m| m.role == LlmRole::Assistant && m.tool_calls.is_some())
+                            .unwrap_or(false);
+
+                    if still_has_parent {
+                        break;
+                    }
+
+                    let orphan = messages.remove(idx);
+                    tracing::debug!(
+                        role = ?orphan.role,
+                        "Removed orphaned tool result after truncation"
+                    );
+                }
             } else {
                 // Can't remove any more messages
                 tracing::warn!(
@@ -470,6 +561,10 @@ impl ContextBuilder for ContextBuilderImpl {
 
         // Truncate if necessary, protecting system and current messages
         let context = self.truncate_context(context, &current_msg);
+
+        // Final safety pass: remove any orphaned tool messages that may have slipped
+        // through (e.g. from sessions persisted before this fix was deployed).
+        let context = Self::sanitize_tool_pairs(context);
 
         tracing::info!(
             message_count = context.len(),

@@ -29,8 +29,26 @@ impl Session {
     }
 
     pub fn add_message(&mut self, message: Message) {
-        if self.messages.len() >= MAX_MESSAGES {
+        // Evict messages from the front to make room, but always remove complete
+        // tool-interaction groups together. An assistant message that has tool_calls
+        // must not remain in the history without its immediately following tool_result
+        // messages (and vice-versa), because that would produce an invalid message
+        // sequence for the OpenAI API.
+        while self.messages.len() >= MAX_MESSAGES {
+            // Remove the oldest message.
             self.messages.pop_front();
+
+            // If the new front of the queue is a tool_result, keep removing until
+            // we reach the next user or assistant-without-tool-calls boundary, so
+            // we never leave orphaned tool results at the head.
+            while self
+                .messages
+                .front()
+                .map(|m| m.role == "tool_result")
+                .unwrap_or(false)
+            {
+                self.messages.pop_front();
+            }
         }
         self.messages.push_back(message);
         self.last_accessed = Utc::now();
@@ -44,6 +62,10 @@ pub struct Message {
     pub timestamp: DateTime<Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_calls: Option<Vec<ToolCall>>,
+    /// The tool_call_id that this tool result message is responding to.
+    /// Only set on messages with role "tool_result".
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 impl Message {
@@ -53,6 +75,7 @@ impl Message {
             content,
             timestamp: Utc::now(),
             tool_calls: None,
+            tool_call_id: None,
         }
     }
 
@@ -61,15 +84,21 @@ impl Message {
         self
     }
 
-    /// Creates a tool result message
+    /// Creates a tool result message linked to the given tool call ID.
+    ///
+    /// The `tool_call_id` is required by the OpenAI API to correlate each
+    /// tool result back to the specific `tool_calls` entry in the preceding
+    /// assistant message.
+    ///
     /// Note: Uses "tool_result" role (not "tool") to distinguish session storage
     /// from LLM message roles. ContextBuilder translates this to LlmRole::Tool.
-    pub fn tool_result(content: String) -> Self {
+    pub fn tool_result(tool_call_id: String, content: String) -> Self {
         Self {
             role: "tool_result".to_string(),
             content,
             timestamp: Utc::now(),
             tool_calls: None,
+            tool_call_id: Some(tool_call_id),
         }
     }
 

@@ -365,19 +365,22 @@ impl AgentLoop {
 
                 // Add tool results to context AND session
                 for (tool_id, result) in tool_results {
-                    // Add to LLM context
+                    let result_content = format!("Tool {} result: {}", tool_id, result);
+
+                    // Add to LLM context with tool_call_id set so the API can correlate
+                    // this result with the specific tool_calls entry in the preceding
+                    // assistant message.
                     context.push(LlmMessage {
                         role: LlmRole::Tool,
-                        content: format!("Tool {} result: {}", tool_id, result),
+                        content: result_content.clone(),
                         tool_calls: None,
-                        tool_call_id: None,
+                        tool_call_id: Some(tool_id.clone()),
                     });
 
-                    // Add to session as tool_result message
-                    let tool_result_message = crate::session::Message::tool_result(format!(
-                        "Tool {} result: {}",
-                        tool_id, result
-                    ));
+                    // Add to session as tool_result message, preserving the tool_call_id
+                    // so it can be reconstructed correctly when the session is reloaded.
+                    let tool_result_message =
+                        crate::session::Message::tool_result(tool_id, result_content);
                     session.add_message(tool_result_message);
                 }
 
@@ -818,6 +821,7 @@ mod tests {
 
         // Add tool result message
         session.add_message(crate::session::Message::tool_result(
+            "call_1".to_string(),
             "Tool call_1 result: file1.txt, file2.txt".to_string(),
         ));
 
@@ -851,6 +855,7 @@ mod tests {
         );
 
         session.add_message(crate::session::Message::tool_result(
+            "call_weather_1".to_string(),
             "Tool call_weather_1 result: Sunny, 25°C".to_string(),
         ));
 
@@ -870,6 +875,12 @@ mod tests {
         assert_eq!(
             session.messages[1].tool_calls.as_ref().unwrap()[0].id,
             "call_weather_1"
+        );
+
+        // Verify tool_call_id is stored on the tool_result message
+        assert_eq!(
+            session.messages[2].tool_call_id.as_deref(),
+            Some("call_weather_1")
         );
     }
 
@@ -919,7 +930,7 @@ mod tests {
         assert!(assistant_msg.is_assistant());
         assert!(!assistant_msg.is_tool_result());
 
-        let tool_result_msg = crate::session::Message::tool_result("Result".to_string());
+        let tool_result_msg = crate::session::Message::tool_result("call_1".to_string(), "Result".to_string());
         assert!(!tool_result_msg.is_user());
         assert!(!tool_result_msg.is_assistant());
         assert!(tool_result_msg.is_tool_result());
