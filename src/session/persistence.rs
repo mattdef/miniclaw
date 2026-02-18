@@ -20,13 +20,13 @@ impl Persistence {
         let file_path = self
             .sessions_dir
             .join(format!("{}.json", session.session_id));
-        
+
         // Use atomic write pattern with retry logic for transient IO errors
         Self::atomic_write_session_with_retry(&file_path, session, 3).await
     }
 
     /// Atomically writes a session file with retry logic for transient IO errors.
-    /// 
+    ///
     /// Retries up to `max_retries` times with exponential backoff on IO errors.
     async fn atomic_write_session_with_retry(
         file_path: &Path,
@@ -76,18 +76,18 @@ impl Persistence {
     }
 
     /// Atomically writes a session file to prevent corruption during crashes.
-    /// 
+    ///
     /// Pattern:
     /// 1. Write to temporary file: `{session_file}.tmp`
     /// 2. Set permissions to 0600 on Unix
     /// 3. Atomically rename temp file to final location
     /// 4. Clean up temp file if rename fails
-    /// 
+    ///
     /// This ensures that the session file is never in a partially-written state.
     async fn atomic_write_session(file_path: &Path, session: &Session) -> Result<()> {
         let temp_path = file_path.with_extension("tmp");
         let session_id = session.session_id.clone();
-        
+
         // Serialize session to JSON
         let json = serde_json::to_string_pretty(session)
             .map_err(|e| MiniClawError::serialization(e.to_string()))?;
@@ -195,14 +195,12 @@ impl Persistence {
         let corrupted_path = file_path.with_extension("json.corrupted");
 
         // Rename corrupted file
-        fs::rename(file_path, &corrupted_path)
-            .await
-            .map_err(|e| {
-                MiniClawError::session_persistence(
-                    session_id,
-                    format!("Failed to rename corrupted file: {}", e),
-                )
-            })?;
+        fs::rename(file_path, &corrupted_path).await.map_err(|e| {
+            MiniClawError::session_persistence(
+                session_id,
+                format!("Failed to rename corrupted file: {}", e),
+            )
+        })?;
 
         error!(
             "Corrupted session file detected. Moved {:?} to {:?}",
@@ -369,7 +367,11 @@ mod tests {
         while let Some(entry) = entries.next_entry().await.unwrap() {
             let path = entry.path();
             let ext = path.extension().and_then(|s| s.to_str());
-            assert_ne!(ext, Some("tmp"), "Temp file should not exist after atomic write");
+            assert_ne!(
+                ext,
+                Some("tmp"),
+                "Temp file should not exist after atomic write"
+            );
         }
 
         // Verify the actual file exists and is valid JSON
@@ -418,20 +420,25 @@ mod tests {
         // Verify file exists and is valid
         let file_path = sessions_dir.join("telegram_crash_test.json");
         assert!(file_path.exists());
-        
+
         // Read raw content and verify it's valid JSON
         let content = fs::read_to_string(&file_path).await.unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(parsed.is_object());
-        
+
         // Verify no temp file exists (would indicate incomplete write)
         let temp_path = file_path.with_extension("tmp");
-        assert!(!temp_path.exists(), "Temp file should be cleaned up after successful write");
-        
+        assert!(
+            !temp_path.exists(),
+            "Temp file should be cleaned up after successful write"
+        );
+
         // Now simulate trying to read after a "crash" - file should still be valid
-        let loaded = persistence.load_session("telegram_crash_test").await.unwrap();
+        let loaded = persistence
+            .load_session("telegram_crash_test")
+            .await
+            .unwrap();
         assert_eq!(loaded.messages.len(), 1);
         assert_eq!(loaded.messages[0].content, "original");
     }
 }
-

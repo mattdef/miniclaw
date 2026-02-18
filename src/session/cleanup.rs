@@ -59,15 +59,14 @@ impl Cleanup {
     /// A tuple containing:
     /// - Vector of (session_id, file_path, last_accessed, file_size) for expired sessions
     /// - Total count of session files scanned
-    pub async fn scan_expired_sessions(&self) -> Result<(Vec<(String, PathBuf, DateTime<Utc>, u64)>, usize)> {
+    pub async fn scan_expired_sessions(
+        &self,
+    ) -> Result<(Vec<(String, PathBuf, DateTime<Utc>, u64)>, usize)> {
         let mut expired = Vec::new();
         let mut total_count = 0;
 
         let mut entries = fs::read_dir(&self.sessions_dir).await.with_context(|| {
-            format!(
-                "Failed to read sessions directory: {:?}",
-                self.sessions_dir
-            )
+            format!("Failed to read sessions directory: {:?}", self.sessions_dir)
         })?;
 
         while let Some(entry) = entries.next_entry().await? {
@@ -139,13 +138,15 @@ impl Cleanup {
                             );
                             return Ok(0); // Return 0 bytes freed
                         }
-                        
-                        // Still expired - safe to delete
-                        fs::remove_file(path)
-                            .await
-                            .with_context(|| format!("Failed to delete session file: {:?}", path))?;
 
-                        let age_days = Utc::now().signed_duration_since(session.last_accessed).num_days();
+                        // Still expired - safe to delete
+                        fs::remove_file(path).await.with_context(|| {
+                            format!("Failed to delete session file: {:?}", path)
+                        })?;
+
+                        let age_days = Utc::now()
+                            .signed_duration_since(session.last_accessed)
+                            .num_days();
                         debug!(
                             session_id = %session_id,
                             last_accessed = %session.last_accessed,
@@ -164,7 +165,10 @@ impl Cleanup {
             }
             Err(e) => {
                 // File might have been deleted already (e.g., by another process)
-                debug!("Session file {:?} no longer exists or is unreadable: {}", path, e);
+                debug!(
+                    "Session file {:?} no longer exists or is unreadable: {}",
+                    path, e
+                );
                 Ok(0)
             }
         }
@@ -214,16 +218,14 @@ impl Cleanup {
     /// Returns a JoinHandle for graceful shutdown coordination and a shutdown sender
     pub fn start_cleanup_task(
         &self,
-    ) -> (
-        tokio::task::JoinHandle<()>,
-        tokio::sync::mpsc::Sender<()>,
-    ) {
+    ) -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Sender<()>) {
         let sessions_dir = self.sessions_dir.clone();
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         let handle = tokio::spawn(async move {
             let cleanup = Cleanup::new(sessions_dir);
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
+            let mut interval =
+                tokio::time::interval(tokio::time::Duration::from_secs(CLEANUP_INTERVAL_SECS));
 
             loop {
                 tokio::select! {
@@ -486,7 +488,10 @@ mod tests {
         let timeout = tokio::time::Duration::from_secs(5);
         let result = tokio::time::timeout(timeout, handle).await;
 
-        assert!(result.is_ok(), "Cleanup task should complete within timeout");
+        assert!(
+            result.is_ok(),
+            "Cleanup task should complete within timeout"
+        );
     }
 
     #[tokio::test]
@@ -499,7 +504,7 @@ mod tests {
         let mut session = Session::new("telegram".to_string(), "123".to_string());
         let old_timestamp = Utc::now() - Duration::days(25);
         session.last_accessed = old_timestamp;
-        
+
         let json = serde_json::to_string(&session).unwrap();
         fs::write(sessions_dir.join("telegram_123.json"), json)
             .await
@@ -507,7 +512,7 @@ mod tests {
 
         // Simulate session access by adding a message (which updates last_accessed)
         session.add_message(Message::new("user".to_string(), "Hello".to_string()));
-        
+
         // Verify last_accessed was updated
         assert!(session.last_accessed > old_timestamp);
         assert!(!Cleanup::is_expired(session.last_accessed));

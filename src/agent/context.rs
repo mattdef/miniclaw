@@ -647,19 +647,19 @@ mod tests {
                 role: LlmRole::System,
                 content: "System".to_string(),
                 tool_calls: None,
-            tool_call_id: None,
+                tool_call_id: None,
             },
             LlmMessage {
                 role: LlmRole::User,
                 content: "Old message".to_string(),
                 tool_calls: None,
-            tool_call_id: None,
+                tool_call_id: None,
             },
             LlmMessage {
                 role: LlmRole::Assistant,
                 content: "Response".to_string(),
                 tool_calls: None,
-            tool_call_id: None,
+                tool_call_id: None,
             },
             current.clone(),
         ];

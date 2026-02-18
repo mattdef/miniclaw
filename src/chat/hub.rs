@@ -32,6 +32,7 @@ pub struct ChatHub {
     outbound_rx: Arc<RwLock<mpsc::Receiver<OutboundMessage>>>,
     channels: Arc<RwLock<HashMap<String, mpsc::Sender<OutboundMessage>>>>,
     delivery_failure_callback: Option<DeliveryFailureCallback>,
+    agent_tx: Option<mpsc::Sender<InboundMessage>>,
 }
 
 impl ChatHub {
@@ -50,6 +51,7 @@ impl ChatHub {
             outbound_rx: Arc::new(RwLock::new(outbound_rx)),
             channels: Arc::new(RwLock::new(HashMap::new())),
             delivery_failure_callback: None,
+            agent_tx: None,
         }
     }
 
@@ -66,6 +68,13 @@ impl ChatHub {
         if let Some(callback) = &self.delivery_failure_callback {
             callback(error, message);
         }
+    }
+
+    /// Register a sender for forwarding messages to the AgentLoop.
+    /// This connects the ChatHub to the AgentLoop for message processing.
+    pub fn register_agent_sender(&mut self, sender: mpsc::Sender<InboundMessage>) {
+        tracing::info!("AgentLoop sender registered with ChatHub");
+        self.agent_tx = Some(sender);
     }
 
     pub fn inbound_sender(&self) -> mpsc::Sender<InboundMessage> {
@@ -219,6 +228,20 @@ impl ChatHub {
                         chat_id = %msg.chat_id,
                         "Received inbound message"
                     );
+                    // Forward to AgentLoop if connected
+                    if let Some(agent_tx) = &self.agent_tx {
+                        match agent_tx.try_send(msg) {
+                            Ok(_) => {
+                                tracing::trace!("Message forwarded to AgentLoop");
+                            }
+                            Err(mpsc::error::TrySendError::Full(_)) => {
+                                tracing::warn!("AgentLoop buffer full, message dropped");
+                            }
+                            Err(mpsc::error::TrySendError::Closed(_)) => {
+                                tracing::error!("AgentLoop receiver closed");
+                            }
+                        }
+                    }
                 }
                 Some(msg) = self.recv_outbound() => {
                     tracing::debug!(
@@ -482,5 +505,62 @@ mod tests {
             notification_received.load(Ordering::SeqCst),
             "Delivery failure notification should have been received"
         );
+    }
+
+    #[test]
+    fn test_register_agent_sender() {
+        let mut hub = ChatHub::new();
+        let (tx, _rx) = mpsc::channel(10);
+        hub.register_agent_sender(tx);
+        assert!(hub.agent_tx.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_message_forwarding_to_agent() {
+        let mut hub = ChatHub::new();
+        let (agent_tx, mut agent_rx) = mpsc::channel(10);
+        hub.register_agent_sender(agent_tx);
+
+        // Send message via inbound_sender
+        let msg = InboundMessage::new("telegram", "123", "Test message");
+        let inbound_tx = hub.inbound_sender();
+        inbound_tx.send(msg).await.unwrap();
+
+        // Simulate ChatHub.run() processing by calling recv_inbound
+        let received = hub.recv_inbound().await;
+        assert!(received.is_some());
+
+        // Verify message was forwarded to agent_rx
+        let forwarded = agent_rx.recv().await;
+        assert!(forwarded.is_some());
+        assert_eq!(forwarded.unwrap().content, "Test message");
+    }
+
+    #[tokio::test]
+    async fn test_agent_buffer_full_drops_message() {
+        let mut hub = ChatHub::new();
+        let (agent_tx, mut agent_rx) = mpsc::channel(2);
+        hub.register_agent_sender(agent_tx);
+
+        // Fill the agent buffer
+        for i in 0..2 {
+            let msg = InboundMessage::new("telegram", "123", format!("msg {}", i));
+            let inbound_tx = hub.inbound_sender();
+            inbound_tx.send(msg).await.unwrap();
+            hub.recv_inbound().await; // Process and forward
+        }
+
+        // Verify both messages in agent_rx
+        assert!(agent_rx.recv().await.is_some());
+        assert!(agent_rx.recv().await.is_some());
+
+        // Send third message - should drop due to full buffer
+        let msg = InboundMessage::new("telegram", "123", "overflow");
+        let inbound_tx = hub.inbound_sender();
+        inbound_tx.send(msg).await.unwrap();
+        hub.recv_inbound().await; // Process and forward - should drop
+
+        // Agent buffer should be empty (message was dropped)
+        assert!(agent_rx.try_recv().is_err());
     }
 }

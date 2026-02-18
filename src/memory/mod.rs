@@ -8,16 +8,22 @@
 
 use std::path::PathBuf;
 
-pub mod long_term;
 pub mod daily_notes;
-pub mod short_term;
+pub mod long_term;
 pub mod ranker;
+pub mod short_term;
 pub mod types;
 
-pub use short_term::{ShortTermMemory, MemoryEntry as ShortTermMemoryEntry, MAX_SHORT_TERM_ENTRIES};
+pub use daily_notes::{
+    DAILY_NOTE_RETENTION_DAYS, DEFAULT_RECENT_DAYS, DailyNoteEntry, DailyNoteSection,
+};
 pub use long_term::{LongTermMemory, LongTermMemoryEntry, MemorySection};
-pub use daily_notes::{DailyNoteEntry, DailyNoteSection, DEFAULT_RECENT_DAYS, DAILY_NOTE_RETENTION_DAYS};
-pub use ranker::{MemoryRanker, RankedMemory, MemorySource, DEFAULT_SEARCH_LIMIT, MAX_SEARCH_RESULTS};
+pub use ranker::{
+    DEFAULT_SEARCH_LIMIT, MAX_SEARCH_RESULTS, MemoryRanker, MemorySource, RankedMemory,
+};
+pub use short_term::{
+    MAX_SHORT_TERM_ENTRIES, MemoryEntry as ShortTermMemoryEntry, ShortTermMemory,
+};
 
 use types::{MemoryEntry, MemoryError};
 
@@ -72,10 +78,10 @@ impl MemoryStore {
     pub async fn append_to_memory(&self, content: String) -> Result<String, MemoryError> {
         // Use the unified LongTermMemory::append_entry method
         self.long_term.append_entry(&content).await?;
-        
+
         // Add to short-term memory
         self.short_term.add_entry(content).await;
-        
+
         // Return file path
         let file_path = self.workspace_path.join("memory").join("MEMORY.md");
         Ok(file_path.to_string_lossy().to_string())
@@ -169,11 +175,10 @@ impl MemoryStore {
         limit: usize,
     ) -> Result<Vec<RankedMemory>, MemoryError> {
         let ranker = MemoryRanker::new(self.workspace_path.clone());
-        ranker.search_all(query, limit).await
-            .map_err(|e| {
-                tracing::error!(error = %e, "Failed to search memories");
-                e
-            })
+        ranker.search_all(query, limit).await.map_err(|e| {
+            tracing::error!(error = %e, "Failed to search memories");
+            e
+        })
     }
 }
 
@@ -198,7 +203,9 @@ mod tests {
         let workspace_path = temp_dir.path().to_path_buf();
         let store = MemoryStore::new(workspace_path);
 
-        store.add_short_term_memory("Test content".to_string()).await;
+        store
+            .add_short_term_memory("Test content".to_string())
+            .await;
         let memory = store.get_short_term_memory().await;
         assert_eq!(memory.len(), 1);
         assert_eq!(memory[0].content, "Test content");
@@ -236,19 +243,25 @@ mod tests {
         // Spawn multiple tasks that add entries concurrently
         let handle1 = tokio::spawn(async move {
             for i in 0..10 {
-                store1.add_short_term_memory(format!("Task 1 - Entry {}", i)).await;
+                store1
+                    .add_short_term_memory(format!("Task 1 - Entry {}", i))
+                    .await;
             }
         });
 
         let handle2 = tokio::spawn(async move {
             for i in 0..10 {
-                store2.add_short_term_memory(format!("Task 2 - Entry {}", i)).await;
+                store2
+                    .add_short_term_memory(format!("Task 2 - Entry {}", i))
+                    .await;
             }
         });
 
         let handle3 = tokio::spawn(async move {
             for i in 0..10 {
-                store3.add_short_term_memory(format!("Task 3 - Entry {}", i)).await;
+                store3
+                    .add_short_term_memory(format!("Task 3 - Entry {}", i))
+                    .await;
             }
         });
 
@@ -275,7 +288,9 @@ mod tests {
         // Spawn tasks that write to files concurrently
         let handle1 = tokio::spawn(async move {
             for i in 0..5 {
-                let _ = store1.append_to_memory(format!("Long-term entry {}", i)).await;
+                let _ = store1
+                    .append_to_memory(format!("Long-term entry {}", i))
+                    .await;
             }
         });
 
@@ -301,8 +316,11 @@ mod tests {
         let store = MemoryStore::new(workspace_path);
 
         // Test direct access to short_term module
-        store.short_term().add_entry("Direct access".to_string()).await;
-        
+        store
+            .short_term()
+            .add_entry("Direct access".to_string())
+            .await;
+
         assert_eq!(store.short_term().len().await, 1);
         let entries = store.short_term().get_entries().await;
         assert_eq!(entries[0].content, "Direct access");
@@ -315,8 +333,14 @@ mod tests {
         let store = MemoryStore::new(workspace_path);
 
         // Create some daily notes
-        store.create_daily_note("Entry 1".to_string()).await.unwrap();
-        store.create_daily_note("Entry 2".to_string()).await.unwrap();
+        store
+            .create_daily_note("Entry 1".to_string())
+            .await
+            .unwrap();
+        store
+            .create_daily_note("Entry 2".to_string())
+            .await
+            .unwrap();
 
         // Read recent daily notes
         let sections = store.read_recent_daily_notes(7).await.unwrap();
@@ -342,12 +366,20 @@ mod tests {
         let store = MemoryStore::new(workspace_path.clone());
 
         // Create today's daily note
-        store.create_daily_note("Today's entry".to_string()).await.unwrap();
+        store
+            .create_daily_note("Today's entry".to_string())
+            .await
+            .unwrap();
 
         // Create an old file (40 days ago)
         let old_date = (Utc::now() - Duration::days(40)).format("%Y-%m-%d");
         let old_file = memory_dir.join(format!("{}.md", old_date));
-        fs::write(&old_file, "# Daily Note\n\n## 10:00:00 UTC\n\nOld entry\n\n---\n").await.unwrap();
+        fs::write(
+            &old_file,
+            "# Daily Note\n\n## 10:00:00 UTC\n\nOld entry\n\n---\n",
+        )
+        .await
+        .unwrap();
 
         // Run cleanup
         let (deleted, bytes_freed) = store.cleanup_daily_notes().await.unwrap();
@@ -378,14 +410,23 @@ mod tests {
         let store = MemoryStore::new(workspace_path);
 
         // Add some content to long-term memory
-        store.append_to_memory("project meeting with team".to_string()).await.unwrap();
-        store.append_to_memory("architecture review session".to_string()).await.unwrap();
-        store.append_to_memory("daily standup notes".to_string()).await.unwrap();
+        store
+            .append_to_memory("project meeting with team".to_string())
+            .await
+            .unwrap();
+        store
+            .append_to_memory("architecture review session".to_string())
+            .await
+            .unwrap();
+        store
+            .append_to_memory("daily standup notes".to_string())
+            .await
+            .unwrap();
 
         // Search for "project"
         let results = store.search_memories("project", 5).await.unwrap();
         assert!(!results.is_empty());
-        
+
         // The "project meeting" entry should have score >= 1
         let project_result = results.iter().find(|r| r.content.contains("project"));
         assert!(project_result.is_some());
@@ -399,14 +440,19 @@ mod tests {
         let store = MemoryStore::new(workspace_path);
 
         // Create a daily note
-        store.create_daily_note("project planning session today".to_string()).await.unwrap();
+        store
+            .create_daily_note("project planning session today".to_string())
+            .await
+            .unwrap();
 
         // Search should find the daily note
         let results = store.search_memories("project", 5).await.unwrap();
         assert!(!results.is_empty());
-        
+
         // Should find the daily note
-        let daily_result = results.iter().find(|r| r.source == crate::memory::MemorySource::DailyNote);
+        let daily_result = results
+            .iter()
+            .find(|r| r.source == crate::memory::MemorySource::DailyNote);
         assert!(daily_result.is_some());
     }
 
@@ -417,16 +463,25 @@ mod tests {
         let store = MemoryStore::new(workspace_path);
 
         // Add entries with different relevance
-        store.append_to_memory("project meeting".to_string()).await.unwrap();
-        store.append_to_memory("project architecture review meeting".to_string()).await.unwrap();
-        store.append_to_memory("unrelated entry".to_string()).await.unwrap();
+        store
+            .append_to_memory("project meeting".to_string())
+            .await
+            .unwrap();
+        store
+            .append_to_memory("project architecture review meeting".to_string())
+            .await
+            .unwrap();
+        store
+            .append_to_memory("unrelated entry".to_string())
+            .await
+            .unwrap();
 
         // Search for "project meeting"
         let results = store.search_memories("project meeting", 5).await.unwrap();
-        
+
         // Should return at least 2 results
         assert!(results.len() >= 2);
-        
+
         // First result should have higher score (contains both "project" and "meeting")
         assert!(results[0].score >= results[1].score);
     }
@@ -437,7 +492,10 @@ mod tests {
         let workspace_path = temp_dir.path().to_path_buf();
         let store = MemoryStore::new(workspace_path);
 
-        store.append_to_memory("some content".to_string()).await.unwrap();
+        store
+            .append_to_memory("some content".to_string())
+            .await
+            .unwrap();
 
         // Empty query should return empty results
         let results = store.search_memories("", 5).await.unwrap();
@@ -452,7 +510,10 @@ mod tests {
 
         // Add multiple entries
         for i in 0..10 {
-            store.append_to_memory(format!("test entry {}", i)).await.unwrap();
+            store
+                .append_to_memory(format!("test entry {}", i))
+                .await
+                .unwrap();
         }
 
         // Search with limit of 3

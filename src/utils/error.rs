@@ -59,6 +59,7 @@ pub enum MiniClawError {
 
 impl MiniClawError {
     /// Sanitize a path for display (remove sensitive user information)
+    #[allow(dead_code)]
     fn sanitize_path(path: &PathBuf) -> String {
         // Replace home directory with ~
         if let Some(home) = dirs::home_dir() {
@@ -419,10 +420,12 @@ mod tests {
 
         let telegram_err = MiniClawError::external_service("telegram", "timeout");
         assert!(telegram_err.suggestion().is_some());
-        assert!(telegram_err
-            .suggestion()
-            .unwrap()
-            .contains("TELEGRAM_BOT_TOKEN"));
+        assert!(
+            telegram_err
+                .suggestion()
+                .unwrap()
+                .contains("TELEGRAM_BOT_TOKEN")
+        );
 
         let llm_err = MiniClawError::external_service("llm", "unauthorized");
         assert!(llm_err.suggestion().is_some());

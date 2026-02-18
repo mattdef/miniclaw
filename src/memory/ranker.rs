@@ -117,7 +117,7 @@ impl MemoryRanker {
                 return content[..newline_pos].to_string();
             }
         }
-        
+
         // Otherwise truncate at 150 chars
         if content.len() > 150 {
             format!("{}...", &content[..147])
@@ -140,7 +140,10 @@ impl MemoryRanker {
     ) -> Result<Vec<RankedMemory>, MemoryError> {
         use crate::memory::LongTermMemory;
 
-        tracing::debug!(token_count = query_tokens.len(), "Searching long-term memory");
+        tracing::debug!(
+            token_count = query_tokens.len(),
+            "Searching long-term memory"
+        );
 
         let long_term = LongTermMemory::new(&self.workspace_path);
         let sections = long_term.read_all().await?;
@@ -162,7 +165,10 @@ impl MemoryRanker {
             }
         }
 
-        tracing::debug!(results_found = results.len(), "Long-term memory search complete");
+        tracing::debug!(
+            results_found = results.len(),
+            "Long-term memory search complete"
+        );
         Ok(results)
     }
 
@@ -182,9 +188,14 @@ impl MemoryRanker {
     ) -> Result<Vec<RankedMemory>, MemoryError> {
         use crate::memory::daily_notes::read_recent_days;
 
-        tracing::debug!(token_count = query_tokens.len(), days = DEFAULT_DAILY_NOTE_SEARCH_DAYS, "Searching daily notes");
+        tracing::debug!(
+            token_count = query_tokens.len(),
+            days = DEFAULT_DAILY_NOTE_SEARCH_DAYS,
+            "Searching daily notes"
+        );
 
-        let sections = read_recent_days(&self.workspace_path, DEFAULT_DAILY_NOTE_SEARCH_DAYS).await?;
+        let sections =
+            read_recent_days(&self.workspace_path, DEFAULT_DAILY_NOTE_SEARCH_DAYS).await?;
 
         let mut results = Vec::new();
 
@@ -231,7 +242,11 @@ impl MemoryRanker {
             return Ok(Vec::new());
         }
 
-        tracing::info!(token_count = query_tokens.len(), limit = limit, "Starting unified memory search");
+        tracing::info!(
+            token_count = query_tokens.len(),
+            limit = limit,
+            "Starting unified memory search"
+        );
 
         // Search both sources in parallel
         let (long_term_results, daily_results) = tokio::join!(
@@ -244,20 +259,22 @@ impl MemoryRanker {
         all_results.extend(long_term_results?);
         all_results.extend(daily_results?);
 
-        tracing::debug!(total_results = all_results.len(), "Combined results from all sources");
+        tracing::debug!(
+            total_results = all_results.len(),
+            "Combined results from all sources"
+        );
 
         // Sort by score (descending), then by date (newest first) for ties
-        all_results.sort_by(|a, b| {
-            b.score
-                .cmp(&a.score)
-                .then_with(|| b.date.cmp(&a.date))
-        });
+        all_results.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| b.date.cmp(&a.date)));
 
         // Apply limit
         let limit = limit.min(MAX_SEARCH_RESULTS);
         let final_results: Vec<RankedMemory> = all_results.into_iter().take(limit).collect();
-        
-        tracing::info!(returned_count = final_results.len(), "Memory search complete");
+
+        tracing::info!(
+            returned_count = final_results.len(),
+            "Memory search complete"
+        );
         Ok(final_results)
     }
 }
@@ -391,13 +408,13 @@ mod tests {
     #[tokio::test]
     async fn test_search_long_term_with_missing_memory_file() {
         use tempfile::tempdir;
-        
+
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
-        
+
         let ranker = MemoryRanker::new(workspace_path);
         let query_tokens = vec!["test".to_string()];
-        
+
         // Should handle missing MEMORY.md gracefully
         let result = ranker.search_long_term(&query_tokens).await;
         assert!(result.is_ok()); // Should return empty results, not error
@@ -407,13 +424,13 @@ mod tests {
     #[tokio::test]
     async fn test_search_daily_notes_with_no_files() {
         use tempfile::tempdir;
-        
+
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
-        
+
         let ranker = MemoryRanker::new(workspace_path);
         let query_tokens = vec!["test".to_string()];
-        
+
         // Should handle no daily notes gracefully
         let result = ranker.search_daily_notes(&query_tokens).await;
         assert!(result.is_ok());
@@ -423,12 +440,12 @@ mod tests {
     #[tokio::test]
     async fn test_search_all_with_empty_workspace() {
         use tempfile::tempdir;
-        
+
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
-        
+
         let ranker = MemoryRanker::new(workspace_path);
-        
+
         // Should handle empty workspace gracefully
         let result = ranker.search_all("test query", 5).await;
         assert!(result.is_ok());
@@ -439,22 +456,24 @@ mod tests {
     async fn test_search_all_respects_max_limit() {
         use tempfile::tempdir;
         use tokio::fs;
-        
+
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory_dir = workspace_path.join("memory");
         fs::create_dir_all(&memory_dir).await.unwrap();
-        
+
         // Create MEMORY.md with many matching entries
         let mut content = String::from("# Memory\n\n");
         for i in 0..30 {
             content.push_str(&format!("## 2026-02-{:02}\n\n", i + 1));
             content.push_str(&format!("- test entry number {} at 10:00:00 UTC\n\n", i));
         }
-        fs::write(memory_dir.join("MEMORY.md"), content).await.unwrap();
-        
+        fs::write(memory_dir.join("MEMORY.md"), content)
+            .await
+            .unwrap();
+
         let ranker = MemoryRanker::new(workspace_path);
-        
+
         // Try to get 100 results, should cap at MAX_SEARCH_RESULTS (20)
         let result = ranker.search_all("test", 100).await.unwrap();
         assert!(result.len() <= MAX_SEARCH_RESULTS);

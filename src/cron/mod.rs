@@ -8,8 +8,8 @@
 //! The scheduler runs as a background task and checks for due jobs every minute.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use chrono::Utc;
@@ -148,7 +148,10 @@ impl CronScheduler {
         Ok(ScheduleResult {
             success: true,
             job_id,
-            message: format!("Interval job scheduled successfully (every {} minutes)", minutes),
+            message: format!(
+                "Interval job scheduled successfully (every {} minutes)",
+                minutes
+            ),
             next_execution,
         })
     }
@@ -163,7 +166,10 @@ impl CronScheduler {
         let mut job_infos: Vec<_> = jobs
             .values()
             .filter(|job| {
-                matches!(job.status, JobStatus::Scheduled | JobStatus::Running | JobStatus::Failed)
+                matches!(
+                    job.status,
+                    JobStatus::Scheduled | JobStatus::Running | JobStatus::Failed
+                )
             })
             .map(|job| job.into())
             .collect();
@@ -214,11 +220,8 @@ impl CronScheduler {
         let jobs = self.jobs.read().await;
         let now = Utc::now();
 
-        jobs
-            .iter()
-            .filter(|(_, job)| {
-                job.status == JobStatus::Scheduled && job.is_due(now)
-            })
+        jobs.iter()
+            .filter(|(_, job)| job.status == JobStatus::Scheduled && job.is_due(now))
             .map(|(id, job)| (id.clone(), job.clone()))
             .collect()
     }
@@ -235,7 +238,7 @@ impl CronScheduler {
     /// Returns Ok(()) if successful, Err if job not found.
     pub async fn mark_job_executed(&self, job_id: &str) -> Result<(), String> {
         let mut jobs = self.jobs.write().await;
-        
+
         if let Some(job) = jobs.get_mut(job_id) {
             job.mark_executed();
             Ok(())
@@ -250,7 +253,7 @@ impl CronScheduler {
     /// Returns Ok(()) if successful, Err if job not found.
     pub async fn mark_job_failed(&self, job_id: &str, error: String) -> Result<(), String> {
         let mut jobs = self.jobs.write().await;
-        
+
         if let Some(job) = jobs.get_mut(job_id) {
             job.mark_failed(error);
             Ok(())
@@ -265,7 +268,7 @@ impl CronScheduler {
     /// Returns Ok(()) if successful, Err if job not found.
     pub async fn mark_job_running(&self, job_id: &str) -> Result<(), String> {
         let mut jobs = self.jobs.write().await;
-        
+
         if let Some(job) = jobs.get_mut(job_id) {
             job.mark_running();
             Ok(())
@@ -278,8 +281,7 @@ impl CronScheduler {
     ///
     /// This should be called periodically to clean up old jobs.
     /// Removes jobs with status: Completed, Cancelled, or Failed (FireAt only).
-    pub async fn cleanup_completed_jobs(&self,
-    ) {
+    pub async fn cleanup_completed_jobs(&self) {
         let mut jobs = self.jobs.write().await;
 
         let to_remove: Vec<_> = jobs
@@ -309,17 +311,17 @@ impl CronScheduler {
     pub fn start_scheduler(self) -> JoinHandle<()> {
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
-            
+
             info!("Cron scheduler started");
 
             loop {
                 interval.tick().await;
-                
+
                 debug!("Checking for due jobs");
 
                 // Get due jobs
                 let due_jobs = self.get_due_jobs().await;
-                
+
                 if !due_jobs.is_empty() {
                     info!(count = %due_jobs.len(), "Found due jobs");
 
@@ -352,7 +354,7 @@ impl CronScheduler {
                                         output = %output,
                                         "Job executed successfully"
                                     );
-                                    
+
                                     // Update job status atomically
                                     if let Err(e) = scheduler.mark_job_executed(&job_id).await {
                                         error!(
@@ -368,7 +370,7 @@ impl CronScheduler {
                                         error = %e,
                                         "Job execution failed"
                                     );
-                                    
+
                                     // Update job status atomically
                                     if let Err(err) = scheduler.mark_job_failed(&job_id, e).await {
                                         error!(
@@ -409,7 +411,7 @@ async fn execute_job(job: &Job) -> Result<String, String> {
 
     // Security: Check command against blacklist
     const BLACKLIST: &[&str] = &[
-        "rm", "sudo", "dd", "mkfs", "shutdown", "reboot", "passwd", "visudo"
+        "rm", "sudo", "dd", "mkfs", "shutdown", "reboot", "passwd", "visudo",
     ];
 
     // Extract basename for blacklist check
@@ -425,7 +427,7 @@ async fn execute_job(job: &Job) -> Result<String, String> {
             job.command
         ));
     }
-    
+
     // Additional security: Check if command contains absolute paths to blacklisted commands
     // This prevents bypassing with /bin/rm, /usr/bin/sudo, etc.
     let cmd_lower = job.command.to_lowercase();
@@ -433,15 +435,14 @@ async fn execute_job(job: &Job) -> Result<String, String> {
         if cmd_lower.contains(&format!("/{}", blacklisted)) {
             return Err(format!(
                 "Command '{}' contains blacklisted command '{}' and is blocked for security reasons",
-                job.command,
-                blacklisted
+                job.command, blacklisted
             ));
         }
     }
 
     // Build the command
     let mut cmd = Command::new(&job.command);
-    
+
     if let Some(args) = &job.args {
         cmd.args(args);
     }
@@ -451,23 +452,23 @@ async fn execute_job(job: &Job) -> Result<String, String> {
         Ok(Ok(output)) => {
             let stdout = String::from_utf8_lossy(&output.stdout);
             let stderr = String::from_utf8_lossy(&output.stderr);
-            
+
             if output.status.success() {
                 Ok(stdout.to_string())
             } else {
                 Err(format!(
                     "Command failed with exit code {:?}: {}",
                     output.status.code(),
-                    if stderr.is_empty() { stdout.to_string() } else { stderr.to_string() }
+                    if stderr.is_empty() {
+                        stdout.to_string()
+                    } else {
+                        stderr.to_string()
+                    }
                 ))
             }
         }
-        Ok(Err(e)) => {
-            Err(format!("Failed to execute command: {}", e))
-        }
-        Err(_) => {
-            Err("Command timed out after 30 seconds".to_string())
-        }
+        Ok(Err(e)) => Err(format!("Failed to execute command: {}", e)),
+        Err(_) => Err("Command timed out after 30 seconds".to_string()),
     }
 }
 
@@ -489,7 +490,11 @@ mod tests {
         let execute_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
 
         let result = scheduler
-            .schedule_fire_at("echo".to_string(), execute_at, Some(vec!["hello".to_string()]))
+            .schedule_fire_at(
+                "echo".to_string(),
+                execute_at,
+                Some(vec!["hello".to_string()]),
+            )
             .await;
 
         assert!(result.is_ok());
@@ -574,7 +579,7 @@ mod tests {
     #[tokio::test]
     async fn test_cancel_job() {
         let scheduler = CronScheduler::new();
-        
+
         let execute_at = (Utc::now() + Duration::hours(1)).to_rfc3339();
         let result = scheduler
             .schedule_fire_at("echo".to_string(), execute_at, None)
@@ -586,7 +591,7 @@ mod tests {
         // Cancel the job
         let cancel_result = scheduler.cancel_job(&job_id).await;
         assert!(cancel_result.is_ok());
-        
+
         let cancel = cancel_result.unwrap();
         assert!(cancel.success);
 
@@ -606,7 +611,7 @@ mod tests {
     #[tokio::test]
     async fn test_get_due_jobs() {
         let scheduler = CronScheduler::new();
-        
+
         // Create a job in the past directly (bypass validation)
         let execute_at = Utc::now() - Duration::minutes(1);
         let job = crate::cron::types::Job::new_fire_at(
@@ -615,7 +620,7 @@ mod tests {
             execute_at,
             None,
         );
-        
+
         // Insert directly into scheduler storage
         {
             let mut jobs = scheduler.jobs.write().await;
@@ -630,7 +635,7 @@ mod tests {
     #[tokio::test]
     async fn test_cleanup_completed_jobs() {
         let scheduler = CronScheduler::new();
-        
+
         // Create a completed job directly (bypass validation)
         let execute_at = Utc::now() - Duration::minutes(5);
         let mut job = crate::cron::types::Job::new_fire_at(
@@ -640,7 +645,7 @@ mod tests {
             None,
         );
         job.mark_executed(); // This marks it as Completed
-        
+
         // Insert directly into scheduler storage
         {
             let mut jobs = scheduler.jobs.write().await;
@@ -662,7 +667,7 @@ mod tests {
     async fn test_job_id_generation() {
         let id1 = CronScheduler::generate_job_id();
         let id2 = CronScheduler::generate_job_id();
-        
+
         assert!(id1.starts_with("job_"));
         assert!(id2.starts_with("job_"));
         assert_ne!(id1, id2); // Should be unique even when generated in same millisecond

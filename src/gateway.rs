@@ -3,12 +3,12 @@
 //! The gateway runs as a background daemon, managing the ChatHub and SessionManager
 //! with automatic session persistence every 30 seconds.
 
-use crate::agent::{AgentLoop, ContextBuilderImpl};
 use crate::agent::tools::ToolRegistry;
+use crate::agent::{AgentLoop, ContextBuilderImpl};
 use crate::channels::{Channel, TelegramChannel};
 use crate::chat::ChatHub;
 use crate::config::Config;
-use crate::providers::{ProviderConfig, ProviderFactory};
+use crate::providers::LlmProvider;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use std::sync::Arc;
@@ -73,10 +73,12 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
     tokio::spawn(async move {
         #[cfg(unix)]
         {
-            use tokio::signal::unix::{signal, SignalKind};
-            let mut sigterm = signal(SignalKind::terminate()).expect("Failed to setup SIGTERM handler");
-            let mut sigint = signal(SignalKind::interrupt()).expect("Failed to setup SIGINT handler");
-            
+            use tokio::signal::unix::{SignalKind, signal};
+            let mut sigterm =
+                signal(SignalKind::terminate()).expect("Failed to setup SIGTERM handler");
+            let mut sigint =
+                signal(SignalKind::interrupt()).expect("Failed to setup SIGINT handler");
+
             tokio::select! {
                 _ = sigterm.recv() => {
                     info!("Received SIGTERM, initiating graceful shutdown...");
@@ -103,7 +105,17 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
     });
 
     // Initialize ChatHub
-    let chat_hub = Arc::new(ChatHub::new());
+    let mut chat_hub = ChatHub::new();
+
+    // Create channel for ChatHub -> AgentLoop communication
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::channel(100);
+
+    // Register the sender with ChatHub
+    chat_hub.register_agent_sender(agent_tx);
+    info!("ChatHub connected to AgentLoop via agent channel");
+
+    // Wrap in Arc for shared access
+    let chat_hub = Arc::new(chat_hub);
     info!("ChatHub initialized");
 
     // Determine workspace directory for context builder
@@ -112,119 +124,35 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
         .context("Could not determine workspace directory")?;
 
     // Create LLM provider
-    let api_key = config.api_key.clone().unwrap_or_default();
-    let model = config.model.clone().unwrap_or_else(|| "google/gemini-2.0-flash-exp:free".to_string());
-    
-    let provider_config = ProviderConfig::OpenRouter(
-        crate::providers::OpenRouterConfig::new(api_key.clone())
-            .with_model(model.clone())
-    );
-    let llm_provider = Arc::from(ProviderFactory::create(provider_config)
-        .context("Failed to create LLM provider")?);
-    
+    let llm_provider = create_provider(config)?;
+
+    // Determine model from provider_config or use provider default
+    let model = config
+        .provider_config
+        .as_ref()
+        .map(|pc| pc.default_model().to_string())
+        .unwrap_or_else(|| llm_provider.default_model());
+
     info!("LLM provider initialized with model: {}", model);
 
-    // Create context builder
-    let context_builder = Arc::new(ContextBuilderImpl::new(workspace_path)
-        .context("Failed to create context builder")?);
-    info!("Context builder initialized");
-
-    // Create tool registry
-    let tool_registry = Arc::new(ToolRegistry::new());
-    // TODO: Register tools here (exec, bash, etc.)
-    info!("Tool registry initialized");
-
-    // Create a new SessionManager wrapped in RwLock for AgentLoop
-    // Note: This is separate from the persistence SessionManager above
-    // In a future refactor, we should unify these
-    let agent_session_manager = Arc::new(RwLock::new(SessionManager::new(sessions_dir.clone())));
-    agent_session_manager.write().await.initialize().await
-        .context("Failed to initialize agent SessionManager")?;
-
-    // Initialize AgentLoop for message processing
-    let agent_loop = AgentLoop::with_model(
-        Arc::clone(&chat_hub),
-        llm_provider,
-        context_builder,
-        tool_registry,
-        agent_session_manager,
-        model.clone(),
+    // Create tool registry with all default tools
+    // The "telegram" channel is used as default for the message tool
+    let tool_registry = Arc::new(
+        ToolRegistry::with_all_default_tools(
+            workspace_path.clone(),
+            Arc::clone(&chat_hub),
+            config,
+            &config.default_channel,
+        )
+        .await,
     );
-    info!("AgentLoop initialized");
+    info!("Tool registry initialized with all default tools");
 
-    // Spawn AgentLoop processing task with error recovery
-    tokio::spawn(async move {
-        info!("AgentLoop processing task started");
-        loop {
-            match agent_loop.run().await {
-                Ok(()) => {
-                    info!("AgentLoop processing task stopped normally");
-                    break;
-                }
-                Err(e) => {
-                    error!("AgentLoop error: {}. Attempting to recover...", e);
-                    // Graceful degradation: Log error and retry after delay
-                    // This allows the system to continue even if LLM provider fails temporarily
-                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                    warn!("Restarting AgentLoop after error...");
-                }
-            }
-        }
-        info!("AgentLoop processing task terminated");
-    });
-
-    // Spawn memory monitoring background task
-    let (memory_shutdown_tx, mut memory_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
-    tokio::spawn(async move {
-        let mut system = System::new_all();
-        let current_pid = match get_current_pid() {
-            Ok(pid) => pid,
-            Err(e) => {
-                error!("Failed to get current PID for memory monitoring: {}. Memory monitoring disabled.", e);
-                return;
-            }
-        };
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(MEMORY_CHECK_INTERVAL_SECS));
-        let mut previous_memory_mb: Option<u64> = None;
-        
-        loop {
-            tokio::select! {
-                _ = interval.tick() => {
-                    system.refresh_all();
-                    if let Some(process) = system.process(current_pid) {
-                        let memory_mb = process.memory() / 1024; // Convert KB to MB
-                        
-                        // Calculate delta if we have previous measurement
-                        let delta_mb = previous_memory_mb.map(|prev| {
-                            memory_mb as i64 - prev as i64
-                        });
-                        
-                        // Log memory usage with appropriate level
-                        if memory_mb > MEMORY_WARNING_THRESHOLD_MB {
-                            warn!(
-                                memory_mb = memory_mb,
-                                threshold_mb = MEMORY_WARNING_THRESHOLD_MB,
-                                delta_mb = delta_mb,
-                                "Memory usage exceeds threshold"
-                            );
-                        } else {
-                            debug!(
-                                memory_mb = memory_mb,
-                                delta_mb = delta_mb,
-                                "Current memory usage"
-                            );
-                        }
-                        
-                        previous_memory_mb = Some(memory_mb);
-                    }
-                }
-                _ = memory_shutdown_rx.recv() => {
-                    debug!("Memory monitoring task received shutdown signal");
-                    break;
-                }
-            }
-        }
-    });
+    // Create context builder
+    let context_builder = Arc::new(
+        ContextBuilderImpl::new(workspace_path).context("Failed to create context builder")?,
+    );
+    info!("Context builder initialized");
 
     // Initialize Telegram channel if configured
     let telegram_channel = if let Some(token) = &config.telegram_token {
@@ -251,8 +179,45 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
         None
     };
 
-    // Main gateway loop
     info!("Gateway daemon is running. Press Ctrl+C to stop.");
+
+    // Spawn memory monitoring background task
+    let (memory_shutdown_tx, mut memory_shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
+    tokio::spawn(async move {
+        use sysinfo::{System, get_current_pid};
+        const MEMORY_WARNING_THRESHOLD_MB: u64 = 200;
+        const MEMORY_CHECK_INTERVAL_SECS: u64 = 60;
+
+        let mut system = System::new_all();
+        let current_pid = match get_current_pid() {
+            Ok(pid) => pid,
+            Err(e) => {
+                error!("Failed to get current PID for memory monitoring: {}. Memory monitoring disabled.", e);
+                return;
+            }
+        };
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(MEMORY_CHECK_INTERVAL_SECS));
+
+        loop {
+            tokio::select! {
+                _ = interval.tick() => {
+                    system.refresh_all();
+                    if let Some(process) = system.process(current_pid) {
+                        let memory_mb = process.memory() / 1024;
+                        if memory_mb > MEMORY_WARNING_THRESHOLD_MB {
+                            warn!(memory_mb = memory_mb, threshold_mb = MEMORY_WARNING_THRESHOLD_MB, "Memory usage exceeds threshold");
+                        } else {
+                            debug!(memory_mb = memory_mb, "Current memory usage");
+                        }
+                    }
+                }
+                _ = memory_shutdown_rx.recv() => {
+                    debug!("Memory monitoring task received shutdown signal");
+                    break;
+                }
+            }
+        }
+    });
 
     loop {
         tokio::select! {
@@ -352,6 +317,32 @@ async fn run_chat_hub(chat_hub: Arc<ChatHub>) -> Result<()> {
     }
 }
 
+/// Creates an LLM provider from configuration
+fn create_provider(config: &Config) -> Result<Arc<dyn LlmProvider>> {
+    use crate::providers::{ProviderConfig, ProviderFactory};
+
+    // Use provider_config if available (only supported format)
+    if let Some(provider_config) = &config.provider_config {
+        debug!(provider_type = %provider_config.provider_type(), "Creating provider from provider_config");
+        let provider = ProviderFactory::create(provider_config.clone()).with_context(|| {
+            format!(
+                "Failed to create {} provider",
+                provider_config.provider_type()
+            )
+        })?;
+        return Ok(Arc::from(provider));
+    }
+
+    // No provider_config - try Ollama as fallback (local provider, no API key needed)
+    debug!("No provider_config found, trying Ollama provider");
+    let provider_config = ProviderConfig::Ollama(crate::providers::OllamaConfig::new());
+
+    ProviderFactory::create(provider_config)
+        .map(Arc::from)
+        .context("Failed to create Ollama provider")
+        .context("No LLM provider available. Please configure a provider in ~/.miniclaw/config.json or ensure Ollama is running locally")
+}
+
 /// Triggered persistence for testing purposes.
 #[cfg(test)]
 pub async fn trigger_persistence(session_manager: &SessionManager) -> Result<()> {
@@ -422,7 +413,10 @@ mod tests {
 
         // Verify the session file was created
         let session_file = sessions_dir.join("telegram_123456789.json");
-        assert!(session_file.exists(), "Session file should exist after persistence");
+        assert!(
+            session_file.exists(),
+            "Session file should exist after persistence"
+        );
 
         // Verify we can load it back
         let loaded_session = session_manager
@@ -517,7 +511,10 @@ mod tests {
 
         // Verify session was flushed to disk
         let session_file = sessions_dir.join("telegram_123.json");
-        assert!(session_file.exists(), "Session should be flushed during graceful shutdown");
+        assert!(
+            session_file.exists(),
+            "Session should be flushed during graceful shutdown"
+        );
     }
 
     #[tokio::test]
@@ -555,11 +552,12 @@ mod tests {
     #[tokio::test]
     async fn test_gateway_command_available() {
         // Verify the gateway command is registered in CLI
-        use clap::CommandFactory;
         use crate::cli::Cli;
+        use clap::CommandFactory;
 
         let cmd = Cli::command();
-        let subcommands: Vec<_> = cmd.get_subcommands()
+        let subcommands: Vec<_> = cmd
+            .get_subcommands()
             .map(|sc| sc.get_name().to_string())
             .collect();
 

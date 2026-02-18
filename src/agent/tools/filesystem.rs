@@ -10,7 +10,7 @@ use serde_json::Value;
 use tokio::fs;
 
 use crate::agent::tools::types::{Tool, ToolError, ToolExecutionContext, ToolResult};
-use crate::utils::paths::{validate_path, PathValidationError};
+use crate::utils::paths::{PathValidationError, validate_path};
 
 /// Tool for filesystem operations
 ///
@@ -43,9 +43,13 @@ impl FilesystemTool {
     pub fn new(base_dir: PathBuf) -> Self {
         // Canonicalize the base directory once for performance
         // In production, this should be validated during app initialization
-        let canonical_base = std::fs::canonicalize(&base_dir)
-            .unwrap_or_else(|e| panic!("Failed to canonicalize base directory {:?}: {}", base_dir, e));
-        
+        let canonical_base = std::fs::canonicalize(&base_dir).unwrap_or_else(|e| {
+            panic!(
+                "Failed to canonicalize base directory {:?}: {}",
+                base_dir, e
+            )
+        });
+
         Self {
             base_dir: canonical_base,
         }
@@ -118,10 +122,12 @@ impl FilesystemTool {
         }
 
         // Read file content
-        fs::read_to_string(path).await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Failed to read file '{}': {}", path.display(), e),
-        })
+        fs::read_to_string(path)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to read file '{}': {}", path.display(), e),
+            })
     }
 
     /// Writes content to a file
@@ -137,30 +143,29 @@ impl FilesystemTool {
     /// * `Err(ToolError)` - If write fails
     async fn write_file(&self, path: &Path, content: &str) -> ToolResult<String> {
         // Check if file exists (for warning) - use async try_exists for non-blocking
-        let exists = tokio::fs::try_exists(path)
-            .await
-            .unwrap_or(false);
-        
+        let exists = tokio::fs::try_exists(path).await.unwrap_or(false);
+
         if exists {
-            tracing::warn!(
-                "File exists, overwriting: {}",
-                path.display()
-            );
+            tracing::warn!("File exists, overwriting: {}", path.display());
         }
 
         // Create parent directories if needed
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).await.map_err(|e| ToolError::ExecutionFailed {
-                tool: self.name().to_string(),
-                message: format!("Failed to create directory '{}': {}", parent.display(), e),
-            })?;
+            fs::create_dir_all(parent)
+                .await
+                .map_err(|e| ToolError::ExecutionFailed {
+                    tool: self.name().to_string(),
+                    message: format!("Failed to create directory '{}': {}", parent.display(), e),
+                })?;
         }
 
         // Write content
-        fs::write(path, content).await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Failed to write file '{}': {}", path.display(), e),
-        })?;
+        fs::write(path, content)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to write file '{}': {}", path.display(), e),
+            })?;
 
         Ok(format!("Successfully wrote to {}", path.display()))
     }
@@ -180,10 +185,12 @@ impl FilesystemTool {
     /// - "other": Symlink, pipe, socket, or other special file type
     async fn list_dir(&self, path: &Path) -> ToolResult<String> {
         // Verify it's a directory
-        let metadata = fs::metadata(path).await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Cannot access directory metadata: {}", e),
-        })?;
+        let metadata = fs::metadata(path)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Cannot access directory metadata: {}", e),
+            })?;
 
         if !metadata.is_dir() {
             return Err(ToolError::ExecutionFailed {
@@ -194,15 +201,21 @@ impl FilesystemTool {
 
         // Read directory entries
         let mut entries = Vec::new();
-        let mut dir = fs::read_dir(path).await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Failed to read directory '{}': {}", path.display(), e),
-        })?;
+        let mut dir = fs::read_dir(path)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to read directory '{}': {}", path.display(), e),
+            })?;
 
-        while let Some(entry) = dir.next_entry().await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Failed to read directory entry: {}", e),
-        })? {
+        while let Some(entry) = dir
+            .next_entry()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to read directory entry: {}", e),
+            })?
+        {
             let file_type = entry.file_type().await.ok();
             let entry_type = if file_type.is_some_and(|ft| ft.is_dir()) {
                 "directory"
@@ -269,17 +282,18 @@ impl Tool for FilesystemTool {
             .and_then(|v| v.as_str())
             .ok_or_else(|| ToolError::InvalidArguments {
                 tool: self.name().to_string(),
-                message: "Missing required parameter 'operation'. Must be 'read', 'write', or 'list'.".to_string(),
+                message:
+                    "Missing required parameter 'operation'. Must be 'read', 'write', or 'list'."
+                        .to_string(),
             })?;
 
         // Extract path
-        let path_str = args
-            .get("path")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments {
+        let path_str = args.get("path").and_then(|v| v.as_str()).ok_or_else(|| {
+            ToolError::InvalidArguments {
                 tool: self.name().to_string(),
                 message: "Missing required parameter 'path'".to_string(),
-            })?;
+            }
+        })?;
 
         match operation {
             "read" => {
@@ -292,7 +306,8 @@ impl Tool for FilesystemTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArguments {
                         tool: self.name().to_string(),
-                        message: "Missing required parameter 'content' for write operation".to_string(),
+                        message: "Missing required parameter 'content' for write operation"
+                            .to_string(),
                     })?;
                 let path = self.validate_path_internal(path_str).await?;
                 self.write_file(&path, content).await
@@ -315,9 +330,9 @@ impl Tool for FilesystemTool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::paths::is_system_path;
     use std::io::Write;
     use tempfile::TempDir;
-    use crate::utils::paths::is_system_path;
 
     /// Creates a FilesystemTool with a temporary directory as base
     fn create_test_tool() -> (FilesystemTool, TempDir) {
@@ -347,20 +362,36 @@ mod tests {
         let params = tool.parameters();
 
         assert_eq!(params["type"], "object");
-        assert!(params["properties"]["operation"]["enum"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("read")));
-        assert!(params["properties"]["operation"]["enum"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("write")));
-        assert!(params["properties"]["operation"]["enum"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("list")));
-        assert!(params["required"].as_array().unwrap().contains(&serde_json::json!("operation")));
-        assert!(params["required"].as_array().unwrap().contains(&serde_json::json!("path")));
+        assert!(
+            params["properties"]["operation"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("read"))
+        );
+        assert!(
+            params["properties"]["operation"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("write"))
+        );
+        assert!(
+            params["properties"]["operation"]["enum"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("list"))
+        );
+        assert!(
+            params["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("operation"))
+        );
+        assert!(
+            params["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("path"))
+        );
     }
 
     #[tokio::test]
@@ -460,7 +491,10 @@ mod tests {
 
         let mut args = HashMap::new();
         args.insert("operation".to_string(), serde_json::json!("write"));
-        args.insert("path".to_string(), serde_json::json!("subdir/nested/file.txt"));
+        args.insert(
+            "path".to_string(),
+            serde_json::json!("subdir/nested/file.txt"),
+        );
         args.insert("content".to_string(), serde_json::json!("nested content"));
 
         let ctx = ToolExecutionContext::default();
@@ -595,7 +629,7 @@ mod tests {
 
         assert!(result.is_err());
         let err = result.unwrap_err();
-        
+
         // Must be PermissionDenied or SystemPathBlocked - NotFound is NOT acceptable for traversal attacks
         match err {
             ToolError::PermissionDenied { message, .. } => {
@@ -605,7 +639,10 @@ mod tests {
                     message
                 );
             }
-            _ => panic!("Expected PermissionDenied for path traversal attack, got {:?}", err),
+            _ => panic!(
+                "Expected PermissionDenied for path traversal attack, got {:?}",
+                err
+            ),
         }
     }
 

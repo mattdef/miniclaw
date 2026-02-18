@@ -1,5 +1,5 @@
-use std::sync::Arc;
-use tokio::sync::RwLock;
+use std::sync::{Arc, Mutex};
+use tokio::sync::{RwLock, mpsc};
 
 use crate::agent::metrics::ResponseMetrics;
 use crate::agent::tools::ToolRegistry;
@@ -68,6 +68,7 @@ pub struct AgentLoop {
     max_iterations: u32,
     model: String,
     response_metrics: Arc<ResponseMetrics>,
+    inbound_rx: Mutex<Option<mpsc::Receiver<InboundMessage>>>,
 }
 
 impl AgentLoop {
@@ -89,6 +90,30 @@ impl AgentLoop {
             max_iterations: MAX_ITERATIONS,
             model,
             response_metrics: Arc::new(ResponseMetrics::new()),
+            inbound_rx: Mutex::new(None),
+        }
+    }
+
+    /// Creates a new AgentLoop with an inbound message receiver
+    pub fn with_inbound_receiver(
+        chat_hub: Arc<ChatHub>,
+        llm_provider: Arc<dyn LlmProvider>,
+        context_builder: Arc<dyn ContextBuilder>,
+        tool_registry: Arc<ToolRegistry>,
+        session_manager: Arc<RwLock<SessionManager>>,
+        inbound_rx: mpsc::Receiver<InboundMessage>,
+    ) -> Self {
+        let model = llm_provider.default_model();
+        Self {
+            chat_hub,
+            llm_provider,
+            context_builder,
+            tool_registry,
+            session_manager,
+            max_iterations: MAX_ITERATIONS,
+            model,
+            response_metrics: Arc::new(ResponseMetrics::new()),
+            inbound_rx: Mutex::new(Some(inbound_rx)),
         }
     }
 
@@ -111,6 +136,31 @@ impl AgentLoop {
             max_iterations: MAX_ITERATIONS,
             model,
             response_metrics: Arc::new(ResponseMetrics::new()),
+            inbound_rx: Mutex::new(None),
+        }
+    }
+
+    /// Creates a new AgentLoop with a specific model override and inbound receiver
+    pub fn with_model_and_receiver(
+        chat_hub: Arc<ChatHub>,
+        llm_provider: Arc<dyn LlmProvider>,
+        context_builder: Arc<dyn ContextBuilder>,
+        tool_registry: Arc<ToolRegistry>,
+        session_manager: Arc<RwLock<SessionManager>>,
+        model: impl Into<String>,
+        inbound_rx: mpsc::Receiver<InboundMessage>,
+    ) -> Self {
+        let model = model.into();
+        Self {
+            chat_hub,
+            llm_provider,
+            context_builder,
+            tool_registry,
+            session_manager,
+            max_iterations: MAX_ITERATIONS,
+            model,
+            response_metrics: Arc::new(ResponseMetrics::new()),
+            inbound_rx: Mutex::new(Some(inbound_rx)),
         }
     }
 
@@ -170,7 +220,7 @@ impl AgentLoop {
             context_ms = context_time.as_millis(),
             "Context built successfully"
         );
-        
+
         tracing::trace!(
             session_id = %session_id,
             context_ms = context_time.as_millis(),
@@ -184,10 +234,10 @@ impl AgentLoop {
 
         // Calculate and log response time
         let response_time = msg_start.elapsed();
-        
+
         // Record for percentile tracking
         self.response_metrics.record(response_time);
-        
+
         // Log individual response time and current metrics
         if let (Some(p95), Some(avg)) = (
             self.response_metrics.percentile_95(),
@@ -201,7 +251,7 @@ impl AgentLoop {
                 session_id = %session_id,
                 "Message processed"
             );
-            
+
             // Warn if 95th percentile exceeds target
             if p95 > TARGET_RESPONSE_TIME_P95_MS {
                 tracing::warn!(
@@ -269,8 +319,8 @@ impl AgentLoop {
             );
 
             // Get available tools
-            let tools = self.tool_registry.get_tool_definitions();
-            
+            let tools = self.tool_registry.get_tool_definitions().await;
+
             // Time the LLM call
             let llm_start = std::time::Instant::now();
 
@@ -278,7 +328,7 @@ impl AgentLoop {
             let llm_response = self.call_llm_with_retry(&context, &tools).await?;
             let llm_elapsed = llm_start.elapsed().as_millis();
             llm_time_ms += llm_elapsed;
-            
+
             tracing::trace!(
                 session_id = %session_id,
                 iteration = iteration,
@@ -508,16 +558,20 @@ impl AgentLoop {
     /// - Handle graceful shutdown on SIGTERM
     pub async fn run(&self) -> Result<()> {
         let mut shutdown_signal = std::pin::pin!(tokio::signal::ctrl_c());
-        let _inbound_sender = self.chat_hub.inbound_sender();
 
-        // TODO: In future iterations, we need access to ChatHub's inbound receiver
-        // For now, this demonstrates the structure. The actual implementation would:
-        // 1. Get mutable access to ChatHub's inbound_rx
-        // 2. Loop with tokio::select! listening on both inbound messages and shutdown
-        // 3. Call process_message() for each inbound message
-        // 4. Send response via chat_hub.outbound_sender()
-
-        tracing::info!("Agent loop started, waiting for messages");
+        // Extract the inbound receiver if configured
+        let mut inbound_rx = match self.inbound_rx.lock().unwrap().take() {
+            Some(rx) => {
+                tracing::info!("Agent loop started, processing messages");
+                rx
+            }
+            None => {
+                tracing::error!("AgentLoop started without inbound receiver - cannot process messages");
+                return Err(AgentError::ChatHubError(
+                    "No inbound receiver configured".to_string()
+                ));
+            }
+        };
 
         loop {
             tokio::select! {
@@ -527,11 +581,47 @@ impl AgentLoop {
                     break;
                 }
 
-                // Note: Actual message handling would go here
-                _ = tokio::time::sleep(tokio::time::Duration::from_secs(1)) => {
-                    // Placeholder: In production, this would receive messages from inbound_rx
-                    // The ChatHub's inbound_rx is behind an Arc<RwLock<>>, requiring
-                    // architectural changes to support streaming message consumption
+                // Receive and process messages
+                Some(msg) = inbound_rx.recv() => {
+                    tracing::debug!(
+                        channel = %msg.channel,
+                        chat_id = %msg.chat_id,
+                        "Processing inbound message"
+                    );
+
+                    // Process the message
+                    match self.process_message(msg.clone()).await {
+                        Ok(response) => {
+                            // Send response back via chat_hub
+                            if let Err(e) = self.chat_hub.reply(
+                                &msg.channel,
+                                &msg.chat_id,
+                                response
+                            ).await {
+                                tracing::error!(
+                                    channel = %msg.channel,
+                                    chat_id = %msg.chat_id,
+                                    error = %e,
+                                    "Failed to send response"
+                                );
+                            }
+                        }
+                        Err(e) => {
+                            tracing::error!(
+                                channel = %msg.channel,
+                                chat_id = %msg.chat_id,
+                                error = %e,
+                                "Message processing failed"
+                            );
+                            // Continue processing other messages (graceful degradation)
+                        }
+                    }
+                }
+
+                // Channel closed - exit loop
+                else => {
+                    tracing::warn!("Inbound channel closed, stopping agent loop");
+                    break;
                 }
             }
         }
@@ -571,6 +661,12 @@ mod tests {
 
         fn provider_name(&self) -> &'static str {
             "MockLlmProvider"
+        }
+
+        async fn list_models(
+            &self,
+        ) -> std::result::Result<Vec<crate::providers::ModelInfo>, ProviderError> {
+            Ok(vec![crate::providers::ModelInfo::new("test-model", false)])
         }
     }
 

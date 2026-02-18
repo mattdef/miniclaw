@@ -33,7 +33,7 @@ async fn check_file_size(file_path: &Path) -> Result<(), MemoryError> {
                 operation: format!("get file metadata for {}", file_path.display()),
                 source: e,
             })?;
-        
+
         let size = metadata.len();
         if size > MEMORY_FILE_SIZE_LIMIT {
             tracing::warn!(
@@ -44,7 +44,7 @@ async fn check_file_size(file_path: &Path) -> Result<(), MemoryError> {
             );
         }
     }
-    
+
     Ok(())
 }
 
@@ -90,16 +90,16 @@ impl LongTermMemoryEntry {
     /// * `None` - If format is invalid
     fn parse_from_line(line: &str) -> Self {
         let content_str = line.trim();
-        
+
         // Try to extract timestamp from "(added at ...)" suffix
         if let Some(timestamp_start) = content_str.rfind(TIMESTAMP_SUFFIX) {
             let content = content_str[..timestamp_start].trim().to_string();
             let timestamp_str = &content_str[timestamp_start + TIMESTAMP_SUFFIX.len()..];
-            
+
             // Extract timestamp until closing ')'
             if let Some(end_paren) = timestamp_str.find(')') {
                 let timestamp_value = &timestamp_str[..end_paren];
-                
+
                 // Try to parse ISO 8601 timestamp
                 if let Ok(timestamp) = DateTime::parse_from_rfc3339(timestamp_value) {
                     return Self {
@@ -109,7 +109,7 @@ impl LongTermMemoryEntry {
                 }
             }
         }
-        
+
         // Fallback: use entire line as content with current timestamp
         Self::new(content_str.to_string())
     }
@@ -185,14 +185,18 @@ impl LongTermMemory {
             {
                 use std::os::unix::fs::PermissionsExt;
                 let perms = std::fs::Permissions::from_mode(0o600);
-                std::fs::set_permissions(&self.file_path, perms)
-                    .map_err(|e| MemoryError::StorageFailed {
+                std::fs::set_permissions(&self.file_path, perms).map_err(|e| {
+                    MemoryError::StorageFailed {
                         operation: format!("set file permissions for {}", self.file_path.display()),
                         source: e,
-                    })?;
+                    }
+                })?;
             }
 
-            tracing::info!("Created long-term memory file: {}", self.file_path.display());
+            tracing::info!(
+                "Created long-term memory file: {}",
+                self.file_path.display()
+            );
         }
 
         Ok(())
@@ -212,7 +216,9 @@ impl LongTermMemory {
     /// * `Err(MemoryError)` - If append fails
     pub async fn append_entry(&self, content: &str) -> Result<(), MemoryError> {
         if content.trim().is_empty() {
-            return Err(MemoryError::InvalidContent("Content cannot be empty".to_string()));
+            return Err(MemoryError::InvalidContent(
+                "Content cannot be empty".to_string(),
+            ));
         }
 
         // Acquire write lock to prevent concurrent modifications
@@ -230,12 +236,13 @@ impl LongTermMemory {
         let entry_line = format!("- {} {} {})\n", content.trim(), TIMESTAMP_SUFFIX, timestamp);
 
         // Read existing content
-        let existing = fs::read_to_string(&self.file_path)
-            .await
-            .map_err(|e| MemoryError::StorageFailed {
-                operation: format!("read memory file {}", self.file_path.display()),
-                source: e,
-            })?;
+        let existing =
+            fs::read_to_string(&self.file_path)
+                .await
+                .map_err(|e| MemoryError::StorageFailed {
+                    operation: format!("read memory file {}", self.file_path.display()),
+                    source: e,
+                })?;
 
         // Check if today's section exists
         let today_header = format!("## {}", today);
@@ -300,12 +307,13 @@ impl LongTermMemory {
             return Ok(Vec::new());
         }
 
-        let content = fs::read_to_string(&self.file_path)
-            .await
-            .map_err(|e| MemoryError::StorageFailed {
-                operation: format!("read memory file {}", self.file_path.display()),
-                source: e,
-            })?;
+        let content =
+            fs::read_to_string(&self.file_path)
+                .await
+                .map_err(|e| MemoryError::StorageFailed {
+                    operation: format!("read memory file {}", self.file_path.display()),
+                    source: e,
+                })?;
 
         let sections = Self::parse_memory_content(&content)?;
 
@@ -384,7 +392,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         assert!(!memory.file_path.exists());
     }
 
@@ -393,9 +401,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.ensure_exists().await.unwrap();
-        
+
         assert!(memory.file_path.exists());
         let content = fs::read_to_string(&memory.file_path).await.unwrap();
         assert!(content.contains("# Memory"));
@@ -406,9 +414,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().join("nested").join("workspace");
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.ensure_exists().await.unwrap();
-        
+
         assert!(memory.file_path.parent().unwrap().exists());
         assert!(memory.file_path.exists());
     }
@@ -417,19 +425,19 @@ mod tests {
     #[cfg(unix)]
     async fn test_file_permissions_0600() {
         use std::os::unix::fs::PermissionsExt;
-        
+
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         // Create file via append_entry
         memory.append_entry("Test entry").await.unwrap();
-        
+
         // Check permissions are 0600
         let metadata = std::fs::metadata(&memory.file_path).unwrap();
         let permissions = metadata.permissions();
         let mode = permissions.mode();
-        
+
         // Check that permissions are 0600 (owner read/write only)
         // Mode includes file type bits, so we mask with 0o777
         assert_eq!(mode & 0o777, 0o600, "File permissions should be 0600");
@@ -440,9 +448,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.append_entry("Test content").await.unwrap();
-        
+
         assert!(memory.file_path.exists());
         let content = fs::read_to_string(&memory.file_path).await.unwrap();
         assert!(content.contains("Test content"));
@@ -454,7 +462,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         let result = memory.append_entry("").await;
         assert!(result.is_err());
     }
@@ -464,7 +472,7 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         let result = memory.append_entry("   ").await;
         assert!(result.is_err());
     }
@@ -474,9 +482,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.append_entry("First entry").await.unwrap();
-        
+
         let content = fs::read_to_string(&memory.file_path).await.unwrap();
         let today = Utc::now().format("%Y-%m-%d").to_string();
         assert!(content.contains(&format!("## {}", today)));
@@ -487,10 +495,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.append_entry("First entry").await.unwrap();
         memory.append_entry("Second entry").await.unwrap();
-        
+
         let content = fs::read_to_string(&memory.file_path).await.unwrap();
         let today_header_count = content.matches("## ").count();
         assert_eq!(today_header_count, 1); // Only one date header
@@ -503,10 +511,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.ensure_exists().await.unwrap();
         let sections = memory.read_all().await.unwrap();
-        
+
         assert!(sections.is_empty());
     }
 
@@ -515,9 +523,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         let sections = memory.read_all().await.unwrap();
-        
+
         assert!(sections.is_empty());
     }
 
@@ -526,10 +534,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         // Ensure directory exists first
         memory.ensure_exists().await.unwrap();
-        
+
         // Create file with multiple sections manually
         let content = r#"# Memory
 
@@ -543,15 +551,15 @@ mod tests {
 - Entry 5 (added at 2026-02-15T12:00:00Z)
 "#;
         fs::write(&memory.file_path, content).await.unwrap();
-        
+
         let sections = memory.read_all().await.unwrap();
-        
+
         assert_eq!(sections.len(), 2);
         assert_eq!(sections[0].date.to_string(), "2026-02-14");
         assert_eq!(sections[0].entries.len(), 2);
         assert_eq!(sections[1].date.to_string(), "2026-02-15");
         assert_eq!(sections[1].entries.len(), 3);
-        
+
         // Verify timestamps were parsed correctly
         assert_eq!(sections[0].entries[0].content, "Entry 1");
         assert_eq!(
@@ -565,10 +573,10 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         // Ensure directory exists first
         memory.ensure_exists().await.unwrap();
-        
+
         // Create file with only old entries
         let content = r#"# Memory
 
@@ -576,9 +584,9 @@ mod tests {
 - Old entry (added at 2026-02-14T10:00:00Z)
 "#;
         fs::write(&memory.file_path, content).await.unwrap();
-        
+
         let entries = memory.read_today().await.unwrap();
-        
+
         assert!(entries.is_empty());
     }
 
@@ -587,11 +595,11 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.append_entry("Today's entry").await.unwrap();
-        
+
         let entries = memory.read_today().await.unwrap();
-        
+
         assert_eq!(entries.len(), 1);
         assert!(entries[0].content.contains("Today's entry"));
     }
@@ -618,7 +626,7 @@ mod tests {
 - Entry 2 (added at 2026-02-16T11:00:00Z)
 "#;
         let sections = LongTermMemory::parse_memory_content(content).unwrap();
-        
+
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].entries.len(), 2);
     }
@@ -634,7 +642,7 @@ mod tests {
 - Entry 2 (added at 2026-02-16T10:00:00Z)
 "#;
         let sections = LongTermMemory::parse_memory_content(content).unwrap();
-        
+
         // Should skip invalid date and parse valid one
         assert_eq!(sections.len(), 1);
         assert_eq!(sections[0].date.to_string(), "2026-02-16");
@@ -645,9 +653,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.append_entry("Test with timestamp").await.unwrap();
-        
+
         let content = fs::read_to_string(&memory.file_path).await.unwrap();
         assert!(content.contains("(added at "));
         assert!(content.contains("T")); // ISO 8601 format contains 'T'
@@ -658,38 +666,32 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         // Add some entries first
         for i in 0..5 {
             memory.append_entry(&format!("Entry {}", i)).await.unwrap();
         }
-        
+
         let memory1 = memory.clone();
         let memory2 = memory.clone();
         let memory3 = memory.clone();
-        
+
         // Concurrent reads should work fine
-        let handle1 = tokio::spawn(async move {
-            memory1.read_all().await.unwrap()
-        });
-        
-        let handle2 = tokio::spawn(async move {
-            memory2.read_today().await.unwrap()
-        });
-        
-        let handle3 = tokio::spawn(async move {
-            memory3.read_all().await.unwrap()
-        });
-        
+        let handle1 = tokio::spawn(async move { memory1.read_all().await.unwrap() });
+
+        let handle2 = tokio::spawn(async move { memory2.read_today().await.unwrap() });
+
+        let handle3 = tokio::spawn(async move { memory3.read_all().await.unwrap() });
+
         let result1 = handle1.await.unwrap();
         let result2 = handle2.await.unwrap();
         let result3 = handle3.await.unwrap();
-        
+
         // All reads should return consistent results
         assert!(!result1.is_empty());
         assert!(!result2.is_empty());
         assert!(!result3.is_empty());
-        
+
         let total1: usize = result1.iter().map(|s| s.entries.len()).sum();
         let total3: usize = result3.iter().map(|s| s.entries.len()).sum();
         assert_eq!(total1, total3);
@@ -700,34 +702,43 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         let memory1 = memory.clone();
         let memory2 = memory.clone();
         let memory3 = memory.clone();
-        
+
         // Concurrent writes should be safe due to write_lock
         let handle1 = tokio::spawn(async move {
             for i in 0..5 {
-                memory1.append_entry(&format!("Task 1 Entry {}", i)).await.unwrap();
+                memory1
+                    .append_entry(&format!("Task 1 Entry {}", i))
+                    .await
+                    .unwrap();
             }
         });
-        
+
         let handle2 = tokio::spawn(async move {
             for i in 0..5 {
-                memory2.append_entry(&format!("Task 2 Entry {}", i)).await.unwrap();
+                memory2
+                    .append_entry(&format!("Task 2 Entry {}", i))
+                    .await
+                    .unwrap();
             }
         });
-        
+
         let handle3 = tokio::spawn(async move {
             for i in 0..5 {
-                memory3.append_entry(&format!("Task 3 Entry {}", i)).await.unwrap();
+                memory3
+                    .append_entry(&format!("Task 3 Entry {}", i))
+                    .await
+                    .unwrap();
             }
         });
-        
+
         handle1.await.unwrap();
         handle2.await.unwrap();
         handle3.await.unwrap();
-        
+
         // All 15 entries should be present
         let entries = memory.read_today().await.unwrap();
         assert_eq!(entries.len(), 15);
@@ -738,29 +749,35 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.append_entry("日本語テスト").await.unwrap();
         memory.append_entry("🎉 Emoji test 🚀").await.unwrap();
-        
+
         let entries = memory.read_today().await.unwrap();
-        
+
         assert_eq!(entries.len(), 2);
         // Check that both entries exist (order may vary)
         let contents: Vec<String> = entries.iter().map(|e| e.content.clone()).collect();
-        assert!(contents.iter().any(|c| c.contains("日本語")), "Missing Japanese content");
-        assert!(contents.iter().any(|c| c.contains("🎉")), "Missing emoji content");
+        assert!(
+            contents.iter().any(|c| c.contains("日本語")),
+            "Missing Japanese content"
+        );
+        assert!(
+            contents.iter().any(|c| c.contains("🎉")),
+            "Missing emoji content"
+        );
     }
 
     #[tokio::test]
     async fn test_memory_section_struct() {
         let date = NaiveDate::from_ymd_opt(2026, 2, 16).unwrap();
         let entry = LongTermMemoryEntry::new("Test".to_string());
-        
+
         let section = MemorySection {
             date,
             entries: vec![entry],
         };
-        
+
         assert_eq!(section.date.to_string(), "2026-02-16");
         assert_eq!(section.entries.len(), 1);
     }
@@ -768,7 +785,7 @@ mod tests {
     #[tokio::test]
     async fn test_long_term_memory_entry_new() {
         let entry = LongTermMemoryEntry::new("Test content".to_string());
-        
+
         assert_eq!(entry.content, "Test content");
         assert!(entry.timestamp.timestamp() > 0);
     }
@@ -779,7 +796,7 @@ mod tests {
             .unwrap()
             .with_timezone(&Utc);
         let entry = LongTermMemoryEntry::with_timestamp("Test".to_string(), timestamp);
-        
+
         assert_eq!(entry.content, "Test");
         assert_eq!(entry.timestamp.to_rfc3339(), "2026-02-14T10:30:00+00:00");
     }
@@ -788,7 +805,7 @@ mod tests {
     async fn test_parse_from_line_with_timestamp() {
         let line = "Entry content (added at 2026-02-14T10:30:00Z)";
         let entry = LongTermMemoryEntry::parse_from_line(line);
-        
+
         assert_eq!(entry.content, "Entry content");
         assert_eq!(entry.timestamp.to_rfc3339(), "2026-02-14T10:30:00+00:00");
     }
@@ -797,7 +814,7 @@ mod tests {
     async fn test_parse_from_line_without_timestamp() {
         let line = "Entry without timestamp";
         let entry = LongTermMemoryEntry::parse_from_line(line);
-        
+
         assert_eq!(entry.content, "Entry without timestamp");
         // Timestamp should be current time (we can't test exact value)
         assert!(entry.timestamp.timestamp() > 0);
@@ -808,9 +825,9 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.append_entry("  Trimmed content  ").await.unwrap();
-        
+
         let content = fs::read_to_string(&memory.file_path).await.unwrap();
         assert!(content.contains("Trimmed content"));
         // Should not contain the extra spaces around
@@ -822,12 +839,12 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         memory.append_entry("Original").await.unwrap();
-        
+
         let cloned = memory.clone();
         cloned.append_entry("Via clone").await.unwrap();
-        
+
         let entries = memory.read_today().await.unwrap();
         assert_eq!(entries.len(), 2);
     }
@@ -837,14 +854,14 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         // First read to populate cache
         memory.append_entry("First").await.unwrap();
         let _ = memory.read_all().await.unwrap();
-        
+
         // Append should invalidate cache
         memory.append_entry("Second").await.unwrap();
-        
+
         // Read again - should get fresh data
         let sections = memory.read_all().await.unwrap();
         let total_entries: usize = sections.iter().map(|s| s.entries.len()).sum();
@@ -856,19 +873,19 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
         let memory = LongTermMemory::new(&workspace_path);
-        
+
         // Add entries
         memory.append_entry("Entry 1").await.unwrap();
         memory.append_entry("Entry 2").await.unwrap();
         memory.append_entry("Entry 3").await.unwrap();
-        
+
         let content = fs::read_to_string(&memory.file_path).await.unwrap();
-        
+
         // Should only have ONE date header for today
         let today = Utc::now().format("%Y-%m-%d").to_string();
         let header_count = content.matches(&format!("## {}", today)).count();
         assert_eq!(header_count, 1, "Should have exactly one date header");
-        
+
         // All three entries should be present
         assert!(content.contains("Entry 1"));
         assert!(content.contains("Entry 2"));

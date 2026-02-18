@@ -1,12 +1,12 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use miniclaw::agent::AgentLoop;
 use miniclaw::agent::tools::ToolRegistry;
 use miniclaw::chat::ChatHub;
-use miniclaw::session::SessionManager;
 use miniclaw::chat::InboundMessage;
+use miniclaw::session::SessionManager;
 use std::path::PathBuf;
 
 /// Mock LLM Provider for benchmarks
@@ -19,7 +19,8 @@ impl miniclaw::providers::LlmProvider for MockLlmProvider {
         _messages: Vec<miniclaw::providers::LlmMessage>,
         _tools: Vec<serde_json::Value>,
         _model: &str,
-    ) -> std::result::Result<miniclaw::providers::LlmResponse, miniclaw::providers::ProviderError> {
+    ) -> std::result::Result<miniclaw::providers::LlmResponse, miniclaw::providers::ProviderError>
+    {
         Ok(miniclaw::providers::LlmResponse {
             content: "Benchmark response".to_string(),
             tool_calls: None,
@@ -43,7 +44,9 @@ fn create_test_agent_loop() -> AgentLoop {
     let llm_provider: Arc<dyn miniclaw::providers::LlmProvider> = Arc::new(MockLlmProvider);
     let context_builder: Arc<dyn miniclaw::agent::ContextBuilder> = Arc::new(MockContextBuilder);
     let tool_registry = Arc::new(ToolRegistry::new());
-    let session_manager = Arc::new(RwLock::new(SessionManager::new(PathBuf::from("/tmp/sessions"))));
+    let session_manager = Arc::new(RwLock::new(SessionManager::new(PathBuf::from(
+        "/tmp/sessions",
+    ))));
 
     AgentLoop::new(
         chat_hub,
@@ -105,7 +108,8 @@ fn benchmark_session_operations(c: &mut Criterion) {
 /// Benchmark context builder (simplified)
 fn benchmark_context_build(c: &mut Criterion) {
     c.bench_function("context_build_empty", |b| {
-        let context_builder: Arc<dyn miniclaw::agent::ContextBuilder> = Arc::new(MockContextBuilder);
+        let context_builder: Arc<dyn miniclaw::agent::ContextBuilder> =
+            Arc::new(MockContextBuilder);
         let session = miniclaw::session::Session::new("test".to_string(), "123".to_string());
         let message = InboundMessage {
             channel: "test".to_string(),

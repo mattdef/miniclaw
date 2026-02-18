@@ -32,7 +32,9 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, warn};
 
 use crate::providers::factory::OllamaConfig;
-use crate::providers::{LlmMessage, LlmProvider, LlmResponse, LlmToolCall, ProviderError};
+use crate::providers::{
+    LlmMessage, LlmProvider, LlmResponse, LlmToolCall, ModelInfo, ProviderError,
+};
 
 /// Ollama API request body format
 #[derive(Debug, Serialize)]
@@ -126,6 +128,20 @@ struct AccumulatedResponse {
     done: bool,
 }
 
+/// Ollama API response for listing models (/api/tags)
+#[derive(Debug, Deserialize)]
+struct OllamaModelsResponse {
+    /// List of available models
+    models: Vec<OllamaModelInfo>,
+}
+
+/// Individual model information from Ollama
+#[derive(Debug, Deserialize)]
+struct OllamaModelInfo {
+    /// Model name (e.g., "llama3.2:latest")
+    name: String,
+}
+
 /// Ollama provider implementation
 ///
 /// This struct implements the `LlmProvider` trait for Ollama's local API,
@@ -157,7 +173,10 @@ impl OllamaProvider {
             .timeout(Duration::from_secs(config.timeout_seconds))
             .build()
             .unwrap_or_else(|e| {
-                panic!("Failed to build HTTP client: {}. This should never happen.", e)
+                panic!(
+                    "Failed to build HTTP client: {}. This should never happen.",
+                    e
+                )
             });
 
         Self { config, client }
@@ -236,7 +255,7 @@ impl OllamaProvider {
     /// Parses a streaming chunk from Ollama
     fn parse_chunk(&self, chunk: &Bytes) -> Result<OllamaResponseChunk, ProviderError> {
         let text = String::from_utf8_lossy(chunk);
-        
+
         // Handle empty lines
         if text.trim().is_empty() {
             return Err(ProviderError::serialization("Empty response chunk"));
@@ -303,16 +322,16 @@ impl OllamaProvider {
 
         match status {
             StatusCode::NOT_FOUND => ProviderError::invalid_request(
-                "Model not found. Run `ollama pull [model_name]` to download the model.".to_string()
+                "Model not found. Run `ollama pull [model_name]` to download the model."
+                    .to_string(),
             ),
             StatusCode::BAD_REQUEST => ProviderError::invalid_request(message),
             StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
                 ProviderError::auth("Authentication failed")
             }
-            StatusCode::TOO_MANY_REQUESTS => ProviderError::rate_limit(
-                format!("Rate limit exceeded: {}", message),
-                Some(1),
-            ),
+            StatusCode::TOO_MANY_REQUESTS => {
+                ProviderError::rate_limit(format!("Rate limit exceeded: {}", message), Some(1))
+            }
             status if status.is_server_error() => {
                 ProviderError::provider(format!("Ollama server error: {}", message), None::<String>)
             }
@@ -328,7 +347,10 @@ impl OllamaProvider {
                 self.config.base_url
             )
         } else if err.is_timeout() {
-            format!("Request timed out after {} seconds", self.config.timeout_seconds)
+            format!(
+                "Request timed out after {} seconds",
+                self.config.timeout_seconds
+            )
         } else {
             format!("Network error: {}", err)
         };
@@ -395,7 +417,8 @@ impl LlmProvider for OllamaProvider {
 
                         match self.parse_chunk(&Bytes::copy_from_slice(line)) {
                             Ok(parsed_chunk) => {
-                                if let Err(e) = self.accumulate_chunk(&mut accumulated, parsed_chunk)
+                                if let Err(e) =
+                                    self.accumulate_chunk(&mut accumulated, parsed_chunk)
                                 {
                                     warn!(error = %e, "Failed to process chunk");
                                 }
@@ -407,19 +430,14 @@ impl LlmProvider for OllamaProvider {
                     }
                 }
                 Err(e) => {
-                    return Err(ProviderError::network(format!(
-                        "Stream error: {}",
-                        e
-                    )));
+                    return Err(ProviderError::network(format!("Stream error: {}", e)));
                 }
             }
         }
 
         // Validate stream completion
         if !accumulated.done {
-            warn!(
-                "Ollama stream ended without done=true flag. Response may be incomplete."
-            );
+            warn!("Ollama stream ended without done=true flag. Response may be incomplete.");
         }
 
         // Log token usage info
@@ -470,6 +488,43 @@ impl LlmProvider for OllamaProvider {
     fn provider_name(&self) -> &'static str {
         "ollama"
     }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        let url = format!("{}/api/tags", self.config.base_url);
+
+        debug!(url = %url, "Listing Ollama models");
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| self.handle_connection_error(&e))?;
+
+        let status = response.status();
+
+        if !status.is_success() {
+            let body = response.text().await.ok();
+            return Err(self.handle_http_error(status, body));
+        }
+
+        let models_response: OllamaModelsResponse = response.json().await.map_err(|e| {
+            ProviderError::serialization(format!("Failed to parse models response: {}", e))
+        })?;
+
+        let mut models: Vec<ModelInfo> = models_response
+            .models
+            .into_iter()
+            .map(|m| ModelInfo::new(m.name, false)) // Ollama doesn't have deprecation info
+            .collect();
+
+        // Sort alphabetically by id
+        models.sort_by(|a, b| a.id.cmp(&b.id));
+
+        debug!(count = models.len(), "Listed Ollama models");
+
+        Ok(models)
+    }
 }
 
 #[cfg(test)]
@@ -496,7 +551,7 @@ mod tests {
         let config = create_test_config();
         let result = OllamaProvider::try_new(config);
         assert!(result.is_ok());
-        
+
         let provider = result.unwrap();
         assert_eq!(provider.provider_name(), "ollama");
     }
@@ -528,7 +583,7 @@ mod tests {
         let provider = OllamaProvider::new(config);
 
         let messages = vec![LlmMessage::new(LlmRole::User, "What's the weather?")];
-        
+
         let tool = ToolDefinition::new(
             "get_weather",
             "Get weather information",
@@ -566,7 +621,7 @@ mod tests {
 
         // Create a mock connection error using Network variant directly
         let err = ProviderError::network("Connection failed");
-        
+
         match err {
             ProviderError::Network { message } => {
                 assert!(message.contains("Connection failed"));
@@ -691,7 +746,7 @@ mod tests {
         };
 
         provider.accumulate_chunk(&mut acc, chunk).unwrap();
-        
+
         assert_eq!(acc.tool_calls.len(), 1);
         assert_eq!(acc.tool_calls[0].name, "get_weather");
         assert_eq!(acc.tool_calls[0].arguments, r#"{"location":"Paris"}"#);
@@ -756,7 +811,7 @@ mod tests {
         ];
 
         let result = provider.chat(messages, vec![], "llama3.2").await;
-        
+
         assert!(result.is_ok());
         let response = result.unwrap();
         assert!(!response.content.is_empty());
@@ -781,7 +836,7 @@ mod tests {
 
         // Test that an empty accumulated response is handled
         let accumulated = AccumulatedResponse::default();
-        
+
         assert_eq!(accumulated.content, "");
         assert_eq!(accumulated.tool_calls.len(), 0);
         assert!(!accumulated.done);
@@ -794,14 +849,11 @@ mod tests {
         let config = create_test_config();
         let _provider = OllamaProvider::new(config);
 
-        let tool_call = crate::providers::LlmToolCall::new(
-            "call_1",
-            "test_tool",
-            r#"{"arg": "value"}"#,
-        );
+        let tool_call =
+            crate::providers::LlmToolCall::new("call_1", "test_tool", r#"{"arg": "value"}"#);
 
-        let message = LlmMessage::new(LlmRole::Assistant, "Using tool")
-            .with_tool_calls(vec![tool_call]);
+        let message =
+            LlmMessage::new(LlmRole::Assistant, "Using tool").with_tool_calls(vec![tool_call]);
 
         let ollama_msg = OllamaMessage {
             role: message.role.as_str().to_string(),

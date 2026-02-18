@@ -40,10 +40,12 @@ pub mod openai;
 pub use error::ProviderError;
 
 // Export factory types and configs
-pub use factory::{OllamaConfig, OpenRouterConfig, ProviderConfig, ProviderFactory};
+pub use factory::{
+    KimiConfig, OllamaConfig, OpenAiConfig, OpenRouterConfig, ProviderConfig, ProviderFactory,
+};
 
-// Export OpenAI/OpenRouter provider
-pub use openai::OpenRouterProvider;
+// Export OpenAI-compatible providers
+pub use openai::{GenericOpenAiProvider, KimiProvider, OpenAiProvider, OpenRouterProvider};
 
 // Export Ollama provider
 pub use ollama::OllamaProvider;
@@ -265,6 +267,26 @@ impl ToolDefinition {
     }
 }
 
+/// Information about a model from the provider
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ModelInfo {
+    /// Model identifier (e.g., "gpt-4o", "anthropic/claude-3.5-sonnet")
+    pub id: String,
+    /// Whether the model is deprecated
+    #[serde(default)]
+    pub deprecated: bool,
+}
+
+impl ModelInfo {
+    /// Creates a new ModelInfo
+    pub fn new(id: impl Into<String>, deprecated: bool) -> Self {
+        Self {
+            id: id.into(),
+            deprecated,
+        }
+    }
+}
+
 /// Trait for LLM providers (OpenAI-compatible, Ollama, etc.)
 ///
 /// All implementations must be Send + Sync to allow concurrent usage across threads.
@@ -307,6 +329,18 @@ pub trait LlmProvider: Send + Sync {
     ///
     /// Used for logging and identification
     fn provider_name(&self) -> &'static str;
+
+    /// Lists available models from this provider
+    ///
+    /// # Returns
+    ///
+    /// A vector of ModelInfo containing all available models, sorted alphabetically by id.
+    /// Models marked as deprecated in the provider response will have deprecated=true.
+    ///
+    /// # Errors
+    ///
+    /// Returns ProviderError if the request fails or the response cannot be parsed.
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError>;
 }
 
 /// Type alias for a boxed LlmProvider trait object
@@ -315,6 +349,7 @@ pub type BoxedProvider = Box<dyn LlmProvider>;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::providers::mock::MockLlmProvider;
 
     #[test]
     fn test_llm_role_as_str() {
@@ -426,5 +461,46 @@ mod tests {
 
         let decoded: LlmRole = serde_json::from_str(&json).unwrap();
         assert_eq!(role, decoded);
+    }
+
+    #[test]
+    fn test_model_info_creation() {
+        let model = ModelInfo::new("gpt-4o", false);
+        assert_eq!(model.id, "gpt-4o");
+        assert!(!model.deprecated);
+
+        let deprecated_model = ModelInfo::new("old-model", true);
+        assert_eq!(deprecated_model.id, "old-model");
+        assert!(deprecated_model.deprecated);
+    }
+
+    #[test]
+    fn test_model_info_serialization() {
+        let model = ModelInfo::new("test-model", true);
+        let json = serde_json::to_string(&model).unwrap();
+        assert!(json.contains("test-model"));
+        assert!(json.contains("deprecated"));
+
+        let decoded: ModelInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(model, decoded);
+    }
+
+    #[test]
+    fn test_model_info_deserialization_default_deprecated() {
+        // Test that deprecated defaults to false when not present
+        let json = r#"{"id":"new-model"}"#;
+        let model: ModelInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(model.id, "new-model");
+        assert!(!model.deprecated);
+    }
+
+    #[tokio::test]
+    async fn test_list_models_with_mock_provider() {
+        let mock = MockLlmProvider::new();
+        let models = mock.list_models().await.unwrap();
+
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].id, "mock-model");
+        assert!(!models[0].deprecated);
     }
 }

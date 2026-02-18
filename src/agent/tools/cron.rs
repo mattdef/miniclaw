@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent::tools::types::{Tool, ToolError, ToolExecutionContext, ToolResult};
 use crate::cron::CronScheduler;
@@ -102,7 +102,11 @@ impl CronTool {
         minutes: u32,
         args: Option<Vec<String>>,
     ) -> ToolResult<String> {
-        match self.scheduler.schedule_interval(command, minutes, args).await {
+        match self
+            .scheduler
+            .schedule_interval(command, minutes, args)
+            .await
+        {
             Ok(result) => {
                 let response = ScheduleResponse {
                     success: true,
@@ -145,9 +149,7 @@ impl CronTool {
     }
 
     /// Cancels a scheduled job
-    async fn cancel_job(&self,
-        job_id: String,
-    ) -> ToolResult<String> {
+    async fn cancel_job(&self, job_id: String) -> ToolResult<String> {
         match self.scheduler.cancel_job(&job_id).await {
             Ok(result) => {
                 let response = CancelResponse {
@@ -263,13 +265,12 @@ impl Tool for CronTool {
         _ctx: &ToolExecutionContext,
     ) -> ToolResult<String> {
         // Get action parameter
-        let action = args
-            .get("action")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments {
+        let action = args.get("action").and_then(|v| v.as_str()).ok_or_else(|| {
+            ToolError::InvalidArguments {
                 tool: self.name().to_string(),
                 message: "Missing required parameter 'action'".to_string(),
-            })?;
+            }
+        })?;
 
         match action {
             "schedule" => {
@@ -278,7 +279,8 @@ impl Tool for CronTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArguments {
                         tool: self.name().to_string(),
-                        message: "Missing required parameter 'job_type' for schedule action".to_string(),
+                        message: "Missing required parameter 'job_type' for schedule action"
+                            .to_string(),
                     })?;
 
                 let command = args
@@ -286,29 +288,27 @@ impl Tool for CronTool {
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| ToolError::InvalidArguments {
                         tool: self.name().to_string(),
-                        message: "Missing required parameter 'command' for schedule action".to_string(),
+                        message: "Missing required parameter 'command' for schedule action"
+                            .to_string(),
                     })?;
 
                 let command = command.to_string();
 
-                let cmd_args = args
-                    .get("args")
-                    .and_then(|v| v.as_array())
-                    .map(|arr| {
-                        arr.iter()
-                            .filter_map(|v| v.as_str().map(String::from))
-                            .collect()
-                    });
+                let cmd_args = args.get("args").and_then(|v| v.as_array()).map(|arr| {
+                    arr.iter()
+                        .filter_map(|v| v.as_str().map(String::from))
+                        .collect()
+                });
 
                 match job_type {
                     "fire_at" => {
-                        let time = args
-                            .get("time")
-                            .and_then(|v| v.as_str())
-                            .ok_or_else(|| ToolError::InvalidArguments {
+                        let time = args.get("time").and_then(|v| v.as_str()).ok_or_else(|| {
+                            ToolError::InvalidArguments {
                                 tool: self.name().to_string(),
-                                message: "Missing required parameter 'time' for FireAt job".to_string(),
-                            })?;
+                                message: "Missing required parameter 'time' for FireAt job"
+                                    .to_string(),
+                            }
+                        })?;
 
                         self.schedule_fire_at(command, time.to_string(), cmd_args)
                             .await
@@ -320,7 +320,8 @@ impl Tool for CronTool {
                             .map(|v| v as u32)
                             .ok_or_else(|| ToolError::InvalidArguments {
                                 tool: self.name().to_string(),
-                                message: "Missing or invalid parameter 'minutes' for Interval job".to_string(),
+                                message: "Missing or invalid parameter 'minutes' for Interval job"
+                                    .to_string(),
                             })?;
 
                         self.schedule_interval(command, minutes, cmd_args).await
@@ -333,13 +334,13 @@ impl Tool for CronTool {
             }
             "list" => self.list_jobs().await,
             "cancel" => {
-                let job_id = args
-                    .get("job_id")
-                    .and_then(|v| v.as_str())
-                    .ok_or_else(|| ToolError::InvalidArguments {
+                let job_id = args.get("job_id").and_then(|v| v.as_str()).ok_or_else(|| {
+                    ToolError::InvalidArguments {
                         tool: self.name().to_string(),
-                        message: "Missing required parameter 'job_id' for cancel action".to_string(),
-                    })?;
+                        message: "Missing required parameter 'job_id' for cancel action"
+                            .to_string(),
+                    }
+                })?;
 
                 self.cancel_job(job_id.to_string()).await
             }
@@ -412,7 +413,7 @@ mod tests {
 
         let result = tool.execute(args, &ctx).await;
         assert!(result.is_ok());
-        
+
         let response: ScheduleResponse = serde_json::from_str(&result.unwrap()).unwrap();
         assert!(response.success);
         assert!(response.job_id.starts_with("job_"));
@@ -435,7 +436,7 @@ mod tests {
 
         let result = tool.execute(args, &ctx).await;
         assert!(result.is_ok());
-        
+
         let response: ScheduleResponse = serde_json::from_str(&result.unwrap()).unwrap();
         assert!(response.success);
         assert!(response.message.contains("every 5 minutes"));
@@ -455,7 +456,7 @@ mod tests {
 
         let result = tool.execute(args, &ctx).await;
         assert!(result.is_ok());
-        
+
         let response: ListResponse = serde_json::from_str(&result.unwrap()).unwrap();
         assert!(response.success);
         assert!(response.jobs.is_empty());
@@ -492,7 +493,7 @@ mod tests {
 
         let result = tool.execute(cancel_args, &ctx).await;
         assert!(result.is_ok());
-        
+
         let response: CancelResponse = serde_json::from_str(&result.unwrap()).unwrap();
         assert!(response.success);
     }
@@ -505,7 +506,7 @@ mod tests {
 
         let args = HashMap::new();
         let result = tool.execute(args, &ctx).await;
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::InvalidArguments { message, .. } => {
@@ -528,7 +529,7 @@ mod tests {
         };
 
         let result = tool.execute(args, &ctx).await;
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::InvalidArguments { message, .. } => {
@@ -552,7 +553,7 @@ mod tests {
         };
 
         let result = tool.execute(args, &ctx).await;
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::InvalidArguments { message, .. } => {
@@ -577,7 +578,7 @@ mod tests {
         };
 
         let result = tool.execute(args, &ctx).await;
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::InvalidArguments { message, .. } => {
@@ -600,7 +601,7 @@ mod tests {
         };
 
         let result = tool.execute(args, &ctx).await;
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::InvalidArguments { message, .. } => {
@@ -625,7 +626,7 @@ mod tests {
 
         let result = tool.execute(args, &ctx).await;
         assert!(result.is_ok()); // Returns success: false, not an error
-        
+
         let response: CancelResponse = serde_json::from_str(&result.unwrap()).unwrap();
         assert!(!response.success);
         assert!(response.message.contains("not found"));

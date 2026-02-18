@@ -1,12 +1,11 @@
 use serde::{Deserialize, Serialize};
 
+use crate::providers::ProviderConfig;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub api_key: Option<String>,
-
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub model: Option<String>,
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub telegram_token: Option<String>,
@@ -19,20 +18,43 @@ pub struct Config {
     /// Whether to log stdout/stderr output from spawned processes
     #[serde(default = "default_spawn_log_output")]
     pub spawn_log_output: bool,
+
+    /// Default channel for message tool (e.g., "telegram", "cli")
+    #[serde(default = "default_channel")]
+    pub default_channel: String,
+
+    /// Provider type: "openrouter", "openai", "kimi", or "ollama"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_type: Option<String>,
+
+    /// Full provider configuration (replaces api_key for new configs)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub provider_config: Option<ProviderConfig>,
+
+    /// DEPRECATED: Legacy model field - kept for deserialization warning only
+    #[serde(skip_serializing)]
+    pub model: Option<String>,
 }
 
 fn default_spawn_log_output() -> bool {
     false
 }
 
+fn default_channel() -> String {
+    "telegram".to_string()
+}
+
 impl Default for Config {
     fn default() -> Self {
         Self {
             api_key: None,
-            model: Some("google/gemini-2.5-flash".to_string()),
             telegram_token: None,
             allow_from: Vec::new(),
             spawn_log_output: false,
+            default_channel: default_channel(),
+            provider_type: None,
+            provider_config: None,
+            model: None,
         }
     }
 }
@@ -68,21 +90,20 @@ impl Config {
         self.telegram_token.as_ref().is_some_and(|t| !t.is_empty())
     }
 
-    /// Check if model is explicitly configured.
-    pub fn is_model_configured(&self) -> bool {
-        self.model.as_ref().is_some_and(|m| !m.is_empty())
-    }
-
     /// Get safe configuration summary for logging.
     /// Never includes actual secret values.
     pub fn get_safe_summary(&self) -> SafeConfigSummary {
         SafeConfigSummary {
             api_key_configured: self.is_api_key_configured(),
             telegram_configured: self.is_telegram_configured(),
-            model_configured: self.is_model_configured(),
-            model: self.model.clone(),
             allow_from_count: self.allow_from.len(),
             spawn_log_output: self.spawn_log_output,
+            provider_type: self.provider_type.clone(),
+            provider_configured: self.provider_config.is_some(),
+            model: self
+                .provider_config
+                .as_ref()
+                .map(|pc| pc.default_model().to_string()),
         }
     }
 }
@@ -93,10 +114,11 @@ impl Config {
 pub struct SafeConfigSummary {
     pub api_key_configured: bool,
     pub telegram_configured: bool,
-    pub model_configured: bool,
-    pub model: Option<String>,
     pub allow_from_count: usize,
     pub spawn_log_output: bool,
+    pub provider_type: Option<String>,
+    pub provider_configured: bool,
+    pub model: Option<String>,
 }
 
 #[cfg(test)]
@@ -107,7 +129,7 @@ mod tests {
     fn test_config_default() {
         let config = Config::default();
         assert!(config.api_key.is_none());
-        assert_eq!(config.model, Some("google/gemini-2.5-flash".to_string()));
+        assert!(config.model.is_none());
         assert!(config.telegram_token.is_none());
         assert!(config.allow_from.is_empty()); // Secure by default
     }
@@ -116,20 +138,25 @@ mod tests {
     fn test_config_serialization() {
         let config = Config {
             api_key: Some("test-key".to_string()),
-            model: Some("test-model".to_string()),
             telegram_token: None,
             allow_from: vec![123_456_789, 987_654_321],
             spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: None,
+            model: None,
         };
 
         let json = serde_json::to_string(&config).unwrap();
         assert!(json.contains("test-key"));
-        assert!(json.contains("test-model"));
         assert!(json.contains("123456789"));
+        // model should NOT be serialized (deprecated field)
+        assert!(!json.contains("model"));
     }
 
     #[test]
-    fn test_config_deserialization() {
+    fn test_config_deserialization_with_deprecated_model() {
+        // Test that old configs with "model" field can still be deserialized
         let json = r#"{
             "api_key": "my-api-key",
             "model": "custom-model",
@@ -139,7 +166,22 @@ mod tests {
 
         let config: Config = serde_json::from_str(json).unwrap();
         assert_eq!(config.api_key, Some("my-api-key".to_string()));
-        assert_eq!(config.model, Some("custom-model".to_string()));
+        assert_eq!(config.model, Some("custom-model".to_string())); // Still parsed but ignored
+        assert_eq!(config.telegram_token, Some("bot-token".to_string()));
+        assert_eq!(config.allow_from, vec![123_456_789]);
+    }
+
+    #[test]
+    fn test_config_deserialization_without_model() {
+        let json = r#"{
+            "api_key": "my-api-key",
+            "telegram_token": "bot-token",
+            "allow_from": [123456789]
+        }"#;
+
+        let config: Config = serde_json::from_str(json).unwrap();
+        assert_eq!(config.api_key, Some("my-api-key".to_string()));
+        assert!(config.model.is_none());
         assert_eq!(config.telegram_token, Some("bot-token".to_string()));
         assert_eq!(config.allow_from, vec![123_456_789]);
     }
@@ -153,16 +195,20 @@ mod tests {
 
         let config: Config = serde_json::from_str(json).unwrap();
         assert!(config.allow_from.is_empty()); // Default to empty
+        assert!(config.model.is_none());
     }
 
     #[test]
     fn test_config_validate_accepts_valid_user_ids() {
         let config = Config {
             api_key: None,
-            model: None,
             telegram_token: None,
             allow_from: vec![123_456_789, 1, i64::MAX],
             spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: None,
+            model: None,
         };
 
         assert!(config.validate().is_ok());
@@ -172,10 +218,13 @@ mod tests {
     fn test_config_validate_rejects_invalid_user_id_zero() {
         let config = Config {
             api_key: None,
-            model: None,
             telegram_token: None,
             allow_from: vec![0],
             spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: None,
+            model: None,
         };
 
         assert!(config.validate().is_err());
@@ -185,12 +234,43 @@ mod tests {
     fn test_config_validate_rejects_invalid_user_id_negative() {
         let config = Config {
             api_key: None,
-            model: None,
             telegram_token: None,
             allow_from: vec![-1, -123_456],
             spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: None,
+            model: None,
         };
 
         assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn test_safe_summary_with_provider_config() {
+        use crate::providers::{OpenAiConfig, ProviderConfig};
+
+        let config = Config {
+            api_key: None,
+            telegram_token: None,
+            allow_from: vec![],
+            spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: Some(ProviderConfig::OpenAi(OpenAiConfig::new("test-key"))),
+            model: None,
+        };
+
+        let summary = config.get_safe_summary();
+        assert_eq!(summary.model, Some("gpt-4o".to_string()));
+        assert!(summary.provider_configured);
+    }
+
+    #[test]
+    fn test_safe_summary_without_provider_config() {
+        let config = Config::default();
+        let summary = config.get_safe_summary();
+        assert!(summary.model.is_none());
+        assert!(!summary.provider_configured);
     }
 }

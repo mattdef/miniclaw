@@ -14,7 +14,7 @@ pub use telegram::{TelegramChannel, TelegramError};
 #[async_trait]
 pub trait Channel: Send + Sync {
     /// Start the channel and begin listening for inbound messages.
-    /// 
+    ///
     /// This method should:
     /// - Initialize the connection to the external service
     /// - Register outbound message sender with the ChatHub

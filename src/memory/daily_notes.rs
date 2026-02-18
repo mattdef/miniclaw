@@ -56,11 +56,13 @@ where
 {
     // Validate content
     if content.trim().is_empty() {
-        return Err(MemoryError::InvalidContent("Content cannot be empty".to_string()));
+        return Err(MemoryError::InvalidContent(
+            "Content cannot be empty".to_string(),
+        ));
     }
-    
+
     tracing::info!("Creating daily note");
-    
+
     // Create memory directory if it doesn't exist
     let memory_dir = workspace_path.join("memory");
     fs::create_dir_all(&memory_dir)
@@ -69,11 +71,11 @@ where
             operation: "create memory directory".to_string(),
             source: e,
         })?;
-    
+
     // Create daily note filename
     let today = Utc::now().format("%Y-%m-%d");
     let daily_file = memory_dir.join(format!("{}.md", today));
-    
+
     // Format content with timestamp
     let timestamp = Utc::now();
     let formatted_content = format!(
@@ -82,7 +84,7 @@ where
         timestamp.format("%H:%M:%S UTC"),
         content
     );
-    
+
     // Append to file (don't overwrite existing entries)
     let mut file = fs::OpenOptions::new()
         .create(true)
@@ -93,16 +95,16 @@ where
             operation: "open daily note for appending".to_string(),
             source: e,
         })?;
-    
+
     file.write_all(formatted_content.as_bytes())
         .await
         .map_err(|e| MemoryError::StorageFailed {
             operation: "write daily note".to_string(),
             source: e,
         })?;
-    
+
     tracing::info!("Successfully created daily note: {}", daily_file.display());
-    
+
     // Create memory entry for short-term storage
     let entry = MemoryEntry {
         content: content.clone(),
@@ -110,12 +112,12 @@ where
         memory_type: MemoryType::Daily,
         file_path: Some(daily_file.to_string_lossy().to_string()),
     };
-    
+
     // Store in short-term memory if callback provided
     if let Some(store_fn) = store_entry {
         store_fn(entry.clone());
     }
-    
+
     Ok((daily_file.to_string_lossy().to_string(), entry))
 }
 
@@ -269,8 +271,7 @@ fn parse_time_string(time_str: &str, date: NaiveDate) -> Option<DateTime<Utc>> {
     let second: u32 = time_parts[2].parse().ok()?;
 
     // Combine provided date with parsed time
-    date
-        .and_hms_opt(hour, minute, second)
+    date.and_hms_opt(hour, minute, second)
         .map(|naive| DateTime::from_naive_utc_and_offset(naive, Utc))
 }
 
@@ -285,9 +286,7 @@ fn parse_time_string(time_str: &str, date: NaiveDate) -> Option<DateTime<Utc>> {
 /// # Returns
 /// * `Ok((usize, usize))` - Number of files deleted and bytes freed
 /// * `Err(MemoryError)` - If cleanup fails
-pub async fn cleanup_old_daily_notes(
-    workspace_path: &Path,
-) -> Result<(usize, usize), MemoryError> {
+pub async fn cleanup_old_daily_notes(workspace_path: &Path) -> Result<(usize, usize), MemoryError> {
     tracing::info!("Starting daily notes cleanup");
 
     let memory_dir = workspace_path.join("memory");
@@ -311,10 +310,14 @@ pub async fn cleanup_old_daily_notes(
         }
     };
 
-    while let Some(entry) = entries.next_entry().await.map_err(|e| MemoryError::StorageFailed {
-        operation: "read directory entry".to_string(),
-        source: e,
-    })? {
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| MemoryError::StorageFailed {
+            operation: "read directory entry".to_string(),
+            source: e,
+        })?
+    {
         let path = entry.path();
         let file_name = match path.file_stem().and_then(|s| s.to_str()) {
             Some(name) => name,
@@ -376,7 +379,12 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
 
-        let result = create_daily_note(&workspace_path, "Test daily note".to_string(), None::<fn(MemoryEntry)>).await;
+        let result = create_daily_note(
+            &workspace_path,
+            "Test daily note".to_string(),
+            None::<fn(MemoryEntry)>,
+        )
+        .await;
         assert!(result.is_ok());
 
         let (file_path, _entry) = result.unwrap();
@@ -393,7 +401,8 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let workspace_path = temp_dir.path().to_path_buf();
 
-        let result = create_daily_note(&workspace_path, "".to_string(), None::<fn(MemoryEntry)>).await;
+        let result =
+            create_daily_note(&workspace_path, "".to_string(), None::<fn(MemoryEntry)>).await;
         assert!(result.is_err());
 
         if let Err(e) = result {
@@ -419,7 +428,13 @@ mod tests {
         let workspace_path = temp_dir.path();
 
         // Create a daily note for today
-        create_daily_note(workspace_path, "Test entry 1".to_string(), None::<fn(MemoryEntry)>).await.unwrap();
+        create_daily_note(
+            workspace_path,
+            "Test entry 1".to_string(),
+            None::<fn(MemoryEntry)>,
+        )
+        .await
+        .unwrap();
 
         let result = read_recent_days(workspace_path, 7).await;
         assert!(result.is_ok());
@@ -436,8 +451,20 @@ mod tests {
         let workspace_path = temp_dir.path();
 
         // Create multiple entries for today
-        create_daily_note(workspace_path, "First entry".to_string(), None::<fn(MemoryEntry)>).await.unwrap();
-        create_daily_note(workspace_path, "Second entry".to_string(), None::<fn(MemoryEntry)>).await.unwrap();
+        create_daily_note(
+            workspace_path,
+            "First entry".to_string(),
+            None::<fn(MemoryEntry)>,
+        )
+        .await
+        .unwrap();
+        create_daily_note(
+            workspace_path,
+            "Second entry".to_string(),
+            None::<fn(MemoryEntry)>,
+        )
+        .await
+        .unwrap();
 
         let result = read_recent_days(workspace_path, 7).await;
         assert!(result.is_ok());
@@ -543,8 +570,24 @@ Second entry content
         let today_file = memory_dir.join(format!("{}.md", today));
 
         // Write files with proper format
-        fs::write(&yesterday_file, format!("# Daily Note - {}\n\n## 10:00:00 UTC\n\nYesterday entry\n\n---\n", yesterday)).await.unwrap();
-        fs::write(&today_file, format!("# Daily Note - {}\n\n## 10:00:00 UTC\n\nToday entry\n\n---\n", today)).await.unwrap();
+        fs::write(
+            &yesterday_file,
+            format!(
+                "# Daily Note - {}\n\n## 10:00:00 UTC\n\nYesterday entry\n\n---\n",
+                yesterday
+            ),
+        )
+        .await
+        .unwrap();
+        fs::write(
+            &today_file,
+            format!(
+                "# Daily Note - {}\n\n## 10:00:00 UTC\n\nToday entry\n\n---\n",
+                today
+            ),
+        )
+        .await
+        .unwrap();
 
         let sections = read_recent_days(workspace_path, 7).await.unwrap();
         assert_eq!(sections.len(), 2);
@@ -563,7 +606,12 @@ Second entry content
         // Create files for 10 days ago (outside 7-day window)
         let old_date = (Utc::now() - Duration::days(10)).format("%Y-%m-%d");
         let old_file = memory_dir.join(format!("{}.md", old_date));
-        fs::write(&old_file, "# Daily Note\n\n## 10:00:00 UTC\n\nOld entry\n\n---\n").await.unwrap();
+        fs::write(
+            &old_file,
+            "# Daily Note\n\n## 10:00:00 UTC\n\nOld entry\n\n---\n",
+        )
+        .await
+        .unwrap();
 
         // Read only 7 days - should not include the old file
         let sections = read_recent_days(workspace_path, 7).await.unwrap();
@@ -587,7 +635,13 @@ Second entry content
         let workspace_path = temp_dir.path();
 
         // Only create a file for today
-        create_daily_note(workspace_path, "Today entry".to_string(), None::<fn(MemoryEntry)>).await.unwrap();
+        create_daily_note(
+            workspace_path,
+            "Today entry".to_string(),
+            None::<fn(MemoryEntry)>,
+        )
+        .await
+        .unwrap();
 
         // Read 7 days - should only return today's section
         let sections = read_recent_days(workspace_path, 7).await.unwrap();
@@ -612,7 +666,9 @@ Second entry content
         let file_path = temp_dir.path().join("2026-02-16.md");
 
         // Create file with title but no entries
-        fs::write(&file_path, "# Daily Note - 2026-02-16\n\n").await.unwrap();
+        fs::write(&file_path, "# Daily Note - 2026-02-16\n\n")
+            .await
+            .unwrap();
 
         let entries = parse_daily_note_file(&file_path).await.unwrap();
         assert!(entries.is_empty());
@@ -624,7 +680,7 @@ Second entry content
         assert!(parse_time_string("invalid", date).is_none());
         assert!(parse_time_string("14:30", date).is_none());
         assert!(parse_time_string("14:30:00 EST", date).is_none());
-        
+
         // Edge cases: invalid hours, minutes, seconds
         assert!(parse_time_string("25:00:00 UTC", date).is_none()); // hour > 23
         assert!(parse_time_string("14:60:00 UTC", date).is_none()); // minute > 59
@@ -638,7 +694,13 @@ Second entry content
         let workspace_path = temp_dir.path();
 
         // Create a daily note
-        create_daily_note(workspace_path, "Test entry".to_string(), None::<fn(MemoryEntry)>).await.unwrap();
+        create_daily_note(
+            workspace_path,
+            "Test entry".to_string(),
+            None::<fn(MemoryEntry)>,
+        )
+        .await
+        .unwrap();
 
         // Read 0 days should return empty
         let sections = read_recent_days(workspace_path, 0).await.unwrap();

@@ -6,6 +6,9 @@
 
 use std::collections::HashSet;
 
+/// Special value that represents "allow all users" wildcard
+const ALLOW_ALL_WILDCARD: i64 = -1;
+
 /// Whitelist checker for Telegram user IDs.
 ///
 /// Implements secure-by-default behavior: empty whitelist = no one allowed
@@ -20,7 +23,11 @@ impl WhitelistChecker {
     /// # Arguments
     /// * `allowed_users` - Vector of allowed Telegram user IDs
     pub fn new(allowed_users: Vec<i64>) -> Self {
-        if allowed_users.is_empty() {
+        let has_wildcard = allowed_users.contains(&ALLOW_ALL_WILDCARD);
+
+        if has_wildcard {
+            tracing::warn!("WARNING: Allow-all mode enabled - all users allowed!");
+        } else if allowed_users.is_empty() {
             tracing::warn!("Whitelist empty, no users allowed (secure by default)");
         } else {
             tracing::info!(
@@ -44,6 +51,11 @@ impl WhitelistChecker {
     /// # Returns
     /// `true` if user is allowed, `false` otherwise
     pub fn is_allowed(&self, user_id: i64) -> bool {
+        // Check for allow-all wildcard first
+        if self.allowed_users.contains(&ALLOW_ALL_WILDCARD) {
+            return true;
+        }
+
         if self.allowed_users.is_empty() {
             // Secure by default: empty whitelist = no one allowed (NFR-S5)
             return false;
@@ -175,5 +187,31 @@ mod tests {
         assert!(!is_command_allowed("RM"));
         assert!(!is_command_allowed("Sudo"));
         assert!(!is_command_allowed("DD"));
+    }
+
+    #[test]
+    fn test_wildcard_allows_all_users() {
+        let checker = WhitelistChecker::new(vec![ALLOW_ALL_WILDCARD]);
+        assert!(checker.is_allowed(123));
+        assert!(checker.is_allowed(456));
+        assert!(checker.is_allowed(-999)); // Even invalid IDs are allowed in allow-all mode
+        assert!(checker.is_allowed(0));
+    }
+
+    #[test]
+    fn test_wildcard_with_other_users() {
+        // Wildcard should work even with other user IDs
+        let checker = WhitelistChecker::new(vec![ALLOW_ALL_WILDCARD, 123456789]);
+        assert!(checker.is_allowed(123456789));
+        assert!(checker.is_allowed(999)); // Any user is allowed
+        assert!(checker.is_allowed(0));
+    }
+
+    #[test]
+    fn test_empty_whitelist_still_rejects_all() {
+        // Empty whitelist should still reject all (secure-by-default preserved)
+        let checker = WhitelistChecker::new(vec![]);
+        assert!(!checker.is_allowed(123));
+        assert!(!checker.is_allowed(456));
     }
 }

@@ -143,10 +143,7 @@ impl SessionManager {
     /// to signal the task to stop.
     pub fn start_auto_persistence(
         &self,
-    ) -> (
-        tokio::task::JoinHandle<()>,
-        tokio::sync::mpsc::Sender<()>,
-    ) {
+    ) -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Sender<()>) {
         let sessions = Arc::clone(&self.sessions);
         let persistence = Arc::clone(&self.persistence);
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
@@ -216,7 +213,9 @@ impl SessionManager {
     ///
     /// Returns a JoinHandle for graceful shutdown coordination and a shutdown sender
     /// to signal the task to stop.
-    pub fn start_cleanup_task(&self) -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Sender<()>) {
+    pub fn start_cleanup_task(
+        &self,
+    ) -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Sender<()>) {
         use crate::session::cleanup::Cleanup;
         let cleanup = Cleanup::new(self.persistence.sessions_dir.clone());
         cleanup.start_cleanup_task()

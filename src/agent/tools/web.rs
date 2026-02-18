@@ -99,31 +99,27 @@ impl WebTool {
     async fn fetch_url(&self, url: &str) -> ToolResult<(u16, String, String)> {
         let client = self.create_client()?;
 
-        let response = client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| {
-                if e.is_timeout() {
-                    ToolError::Timeout {
-                        tool: self.name().to_string(),
-                        duration: DEFAULT_WEB_TIMEOUT_SECS,
-                    }
-                } else if e.is_connect() {
-                    ToolError::ExecutionFailed {
-                        tool: self.name().to_string(),
-                        message: format!(
-                            "Connection failed: {}. Check URL and network connectivity.",
-                            e
-                        ),
-                    }
-                } else {
-                    ToolError::ExecutionFailed {
-                        tool: self.name().to_string(),
-                        message: format!("Request failed: {}", e),
-                    }
+        let response = client.get(url).send().await.map_err(|e| {
+            if e.is_timeout() {
+                ToolError::Timeout {
+                    tool: self.name().to_string(),
+                    duration: DEFAULT_WEB_TIMEOUT_SECS,
                 }
-            })?;
+            } else if e.is_connect() {
+                ToolError::ExecutionFailed {
+                    tool: self.name().to_string(),
+                    message: format!(
+                        "Connection failed: {}. Check URL and network connectivity.",
+                        e
+                    ),
+                }
+            } else {
+                ToolError::ExecutionFailed {
+                    tool: self.name().to_string(),
+                    message: format!("Request failed: {}", e),
+                }
+            }
+        })?;
 
         let status = response.status().as_u16();
         let content_type = response
@@ -134,10 +130,13 @@ impl WebTool {
             .to_string();
 
         // Get content with size limit
-        let content_bytes = response.bytes().await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Failed to read response body: {}", e),
-        })?;
+        let content_bytes = response
+            .bytes()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to read response body: {}", e),
+            })?;
 
         // Truncate to MAX_RESPONSE_SIZE if needed (100KB limit per AC#4)
         let content = if content_bytes.len() > MAX_RESPONSE_SIZE {
@@ -184,7 +183,7 @@ impl WebTool {
         // Second pass: strip all HTML tags using state machine
         let mut result = String::with_capacity(with_structure.len());
         let mut in_tag = false;
-        
+
         for ch in with_structure.chars() {
             if ch == '<' {
                 in_tag = true;
@@ -214,7 +213,7 @@ impl WebTool {
                 normalized_lines.push(trimmed);
             }
         }
-        
+
         normalized_lines.join("\n")
     }
 
@@ -274,13 +273,12 @@ impl Tool for WebTool {
         _ctx: &ToolExecutionContext,
     ) -> ToolResult<String> {
         // Extract URL parameter
-        let url = args
-            .get("url")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments {
+        let url = args.get("url").and_then(|v| v.as_str()).ok_or_else(|| {
+            ToolError::InvalidArguments {
                 tool: self.name().to_string(),
                 message: "Missing required parameter 'url'".to_string(),
-            })?;
+            }
+        })?;
 
         // Validate URL
         self.validate_url(url)?;
@@ -295,7 +293,7 @@ impl Tool for WebTool {
             } else {
                 content.clone()
             };
-            
+
             return Err(ToolError::ExecutionFailed {
                 tool: self.name().to_string(),
                 message: format!(
@@ -489,10 +487,12 @@ mod tests {
         let params = tool.parameters();
         assert_eq!(params["type"], "object");
         assert!(params["properties"]["url"]["type"] == "string");
-        assert!(params["required"]
-            .as_array()
-            .unwrap()
-            .contains(&serde_json::json!("url")));
+        assert!(
+            params["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("url"))
+        );
     }
 
     #[tokio::test]
@@ -548,10 +548,10 @@ mod tests {
     #[test]
     fn test_max_response_size_truncation() {
         let tool = WebTool::new();
-        
+
         // Create content larger than MAX_RESPONSE_SIZE (100KB)
         let large_content = "x".repeat(150 * 1024); // 150KB
-        
+
         // Simulate what happens in fetch_url when content exceeds limit
         let content_bytes = large_content.as_bytes();
         let truncated = if content_bytes.len() > MAX_RESPONSE_SIZE {
@@ -559,7 +559,7 @@ mod tests {
         } else {
             String::from_utf8_lossy(content_bytes).to_string()
         };
-        
+
         // Verify truncation occurred
         assert_eq!(truncated.len(), MAX_RESPONSE_SIZE);
         assert!(truncated.len() < large_content.len());
@@ -568,17 +568,17 @@ mod tests {
     #[test]
     fn test_http_error_body_truncation() {
         let tool = WebTool::new();
-        
+
         // Create error body larger than MAX_ERROR_BODY_SIZE (500 bytes)
         let large_error = "e".repeat(1000);
-        
+
         // Simulate error body truncation logic
         let error_body = if large_error.len() > MAX_ERROR_BODY_SIZE {
             format!("{}... (truncated)", &large_error[..MAX_ERROR_BODY_SIZE])
         } else {
             large_error.clone()
         };
-        
+
         // Verify truncation with ellipsis
         assert!(error_body.contains("... (truncated)"));
         assert!(error_body.len() < large_error.len() + 100); // Some buffer for " (truncated)"

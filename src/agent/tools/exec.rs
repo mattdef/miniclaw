@@ -11,7 +11,7 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use crate::agent::tools::types::{Tool, ToolError, ToolExecutionContext, ToolResult};
-use crate::utils::paths::{validate_path, PathValidationError};
+use crate::utils::paths::{PathValidationError, validate_path};
 
 /// Default timeout for command execution in seconds
 const DEFAULT_EXEC_TIMEOUT_SECS: u64 = 30;
@@ -19,7 +19,7 @@ const DEFAULT_EXEC_TIMEOUT_SECS: u64 = 30;
 /// Blacklisted commands that cannot be executed for security reasons
 /// These commands are considered dangerous and are blocked to prevent system damage
 const EXEC_BLACKLIST: &[&str] = &[
-    "rm", "sudo", "dd", "mkfs", "shutdown", "reboot", "passwd", "visudo"
+    "rm", "sudo", "dd", "mkfs", "shutdown", "reboot", "passwd", "visudo",
 ];
 
 /// Tool for executing shell commands
@@ -49,12 +49,15 @@ impl ExecTool {
     /// * `Err(ToolError)` - If base directory cannot be canonicalized
     pub fn new(base_dir: PathBuf) -> Result<Self, ToolError> {
         // Canonicalize the base directory once for performance
-        let canonical_base = std::fs::canonicalize(&base_dir)
-            .map_err(|e| ToolError::ExecutionFailed {
+        let canonical_base =
+            std::fs::canonicalize(&base_dir).map_err(|e| ToolError::ExecutionFailed {
                 tool: "exec".to_string(),
-                message: format!("Failed to canonicalize base directory {:?}: {}", base_dir, e),
+                message: format!(
+                    "Failed to canonicalize base directory {:?}: {}",
+                    base_dir, e
+                ),
             })?;
-        
+
         Ok(Self {
             base_dir: canonical_base,
             default_timeout: Duration::from_secs(DEFAULT_EXEC_TIMEOUT_SECS),
@@ -95,7 +98,10 @@ impl ExecTool {
             .map_err(|e| match e {
                 PathValidationError::OutsideBaseDirectory(path) => ToolError::PermissionDenied {
                     tool: self.name().to_string(),
-                    message: format!("Working directory '{}' is outside the allowed base directory", path),
+                    message: format!(
+                        "Working directory '{}' is outside the allowed base directory",
+                        path
+                    ),
                 },
                 PathValidationError::SystemPathBlocked(path) => ToolError::PermissionDenied {
                     tool: self.name().to_string(),
@@ -104,7 +110,10 @@ impl ExecTool {
                 PathValidationError::CanonicalizationFailed { path, source } => {
                     ToolError::ExecutionFailed {
                         tool: self.name().to_string(),
-                        message: format!("Failed to resolve working directory '{}': {}", path, source),
+                        message: format!(
+                            "Failed to resolve working directory '{}': {}",
+                            path, source
+                        ),
                     }
                 }
                 PathValidationError::InvalidBaseDirectory(msg) => ToolError::ExecutionFailed {
@@ -142,7 +151,7 @@ impl ExecTool {
         cmd.args(args);
         cmd.stdout(std::process::Stdio::piped());
         cmd.stderr(std::process::Stdio::piped());
-        
+
         // Set working directory if provided
         if let Some(dir) = cwd {
             cmd.current_dir(dir);
@@ -152,9 +161,9 @@ impl ExecTool {
         let mut child = cmd.spawn().map_err(|e| {
             // Classify error types for better debugging
             match e.kind() {
-                std::io::ErrorKind::NotFound => ToolError::NotFound(
-                    format!("Command '{}' not found in system PATH", command)
-                ),
+                std::io::ErrorKind::NotFound => {
+                    ToolError::NotFound(format!("Command '{}' not found in system PATH", command))
+                }
                 std::io::ErrorKind::PermissionDenied => ToolError::PermissionDenied {
                     tool: self.name().to_string(),
                     message: format!("Permission denied executing command '{}'", command),
@@ -162,7 +171,7 @@ impl ExecTool {
                 _ => ToolError::ExecutionFailed {
                     tool: self.name().to_string(),
                     message: format!("Failed to spawn command '{}': {}", command, e),
-                }
+                },
             }
         })?;
 
@@ -176,7 +185,7 @@ impl ExecTool {
                 match result {
                     Ok(status) => {
                         let exit_code = status.code().unwrap_or(-1);
-                        
+
                         // Read stdout and stderr
                         let stdout_str = if let Some(mut stdout) = stdout {
                             let mut buf = Vec::new();
@@ -186,7 +195,7 @@ impl ExecTool {
                         } else {
                             String::new()
                         };
-                        
+
                         let stderr_str = if let Some(mut stderr) = stderr {
                             let mut buf = Vec::new();
                             use tokio::io::AsyncReadExt;
@@ -220,13 +229,13 @@ impl ExecTool {
                 // Timeout occurred - kill the process gracefully, then forcefully if needed
                 // Try SIGTERM first (graceful) via start_kill
                 let _ = child.start_kill();
-                
+
                 // Give it a moment to terminate gracefully
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                
+
                 // Force kill if still running
                 let _ = child.kill().await;
-                
+
                 Err(ToolError::Timeout {
                     tool: self.name().to_string(),
                     duration: self.default_timeout.as_secs(),
@@ -288,13 +297,12 @@ impl Tool for ExecTool {
             })?;
 
         // Extract args array
-        let args_vec = args
-            .get("args")
-            .and_then(|v| v.as_array())
-            .ok_or_else(|| ToolError::InvalidArguments {
+        let args_vec = args.get("args").and_then(|v| v.as_array()).ok_or_else(|| {
+            ToolError::InvalidArguments {
                 tool: self.name().to_string(),
                 message: "Missing required parameter 'args' (must be an array)".to_string(),
-            })?;
+            }
+        })?;
 
         // Convert args to Vec<String>, ensuring all are strings
         let args_strings: Result<Vec<String>, _> = args_vec
@@ -309,7 +317,7 @@ impl Tool for ExecTool {
                     })
             })
             .collect();
-        
+
         let args_strings = args_strings?;
 
         // Extract optional cwd
@@ -320,7 +328,8 @@ impl Tool for ExecTool {
         };
 
         // Execute the command
-        self.execute_command(command, &args_strings, cwd_path.as_deref()).await
+        self.execute_command(command, &args_strings, cwd_path.as_deref())
+            .await
     }
 }
 
@@ -361,14 +370,24 @@ mod tests {
         assert!(params["properties"]["command"]["type"] == "string");
         assert!(params["properties"]["args"]["type"] == "array");
         assert!(params["properties"]["cwd"]["type"] == "string");
-        assert!(params["required"].as_array().unwrap().contains(&serde_json::json!("command")));
-        assert!(params["required"].as_array().unwrap().contains(&serde_json::json!("args")));
+        assert!(
+            params["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("command"))
+        );
+        assert!(
+            params["required"]
+                .as_array()
+                .unwrap()
+                .contains(&serde_json::json!("args"))
+        );
     }
 
     #[test]
     fn test_blacklist_simple_commands() {
         let (tool, _temp) = create_test_tool();
-        
+
         assert!(tool.is_blacklisted("rm"));
         assert!(tool.is_blacklisted("sudo"));
         assert!(tool.is_blacklisted("dd"));
@@ -382,7 +401,7 @@ mod tests {
     #[test]
     fn test_blacklist_with_paths() {
         let (tool, _temp) = create_test_tool();
-        
+
         assert!(tool.is_blacklisted("/bin/rm"));
         assert!(tool.is_blacklisted("/usr/bin/sudo"));
         assert!(tool.is_blacklisted("./rm"));
@@ -391,7 +410,7 @@ mod tests {
     #[test]
     fn test_blacklist_case_insensitive() {
         let (tool, _temp) = create_test_tool();
-        
+
         assert!(tool.is_blacklisted("RM"));
         assert!(tool.is_blacklisted("SUDO"));
         assert!(tool.is_blacklisted("Rm"));
@@ -401,7 +420,7 @@ mod tests {
     #[test]
     fn test_non_blacklisted_commands() {
         let (tool, _temp) = create_test_tool();
-        
+
         assert!(!tool.is_blacklisted("ls"));
         assert!(!tool.is_blacklisted("cat"));
         assert!(!tool.is_blacklisted("echo"));
@@ -453,7 +472,10 @@ mod tests {
         let (tool, _temp) = create_test_tool();
 
         let mut args = HashMap::new();
-        args.insert("command".to_string(), serde_json::json!("nonexistent_command_xyz"));
+        args.insert(
+            "command".to_string(),
+            serde_json::json!("nonexistent_command_xyz"),
+        );
         args.insert("args".to_string(), serde_json::json!([]));
 
         let ctx = ToolExecutionContext::default();
@@ -594,7 +616,10 @@ mod tests {
 
         let mut args = HashMap::new();
         args.insert("command".to_string(), serde_json::json!("ls"));
-        args.insert("args".to_string(), serde_json::json!(["nonexistent_file_xyz"]));
+        args.insert(
+            "args".to_string(),
+            serde_json::json!(["nonexistent_file_xyz"]),
+        );
 
         let ctx = ToolExecutionContext::default();
         let result = tool.execute(args, &ctx).await;
@@ -610,7 +635,7 @@ mod tests {
         // Test that constructor returns error for nonexistent directory
         let invalid_path = PathBuf::from("/nonexistent/directory/that/does/not/exist");
         let result = ExecTool::new(invalid_path);
-        
+
         assert!(result.is_err());
         match result.unwrap_err() {
             ToolError::ExecutionFailed { message, .. } => {

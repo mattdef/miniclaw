@@ -6,7 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::agent::tools::types::{Tool, ToolError, ToolExecutionContext, ToolResult};
 use crate::memory::MemoryStore;
@@ -34,9 +34,13 @@ impl MemoryTool {
     /// * `Err(String)` - If workspace path cannot be canonicalized
     pub fn new(workspace_path: PathBuf) -> Result<Self, String> {
         // Canonicalize workspace path for security
-        let canonical_workspace = std::fs::canonicalize(&workspace_path)
-            .map_err(|e| format!("Failed to canonicalize workspace path {:?}: {}", workspace_path, e))?;
-        
+        let canonical_workspace = std::fs::canonicalize(&workspace_path).map_err(|e| {
+            format!(
+                "Failed to canonicalize workspace path {:?}: {}",
+                workspace_path, e
+            )
+        })?;
+
         Ok(Self {
             memory_store: MemoryStore::new(canonical_workspace.clone()),
             workspace_path: canonical_workspace,
@@ -86,27 +90,30 @@ impl Tool for MemoryTool {
                 tool: self.name().to_string(),
                 message: "Missing required parameter 'content'".to_string(),
             })?;
-        
+
         // Get memory type parameter (default to long_term)
         let memory_type_str = args
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("long_term");
-        
+
         let memory_type = match memory_type_str {
             "long_term" => MemoryType::LongTerm,
             "daily" => MemoryType::Daily,
             _ => {
                 return Err(ToolError::InvalidArguments {
                     tool: self.name().to_string(),
-                    message: format!("Invalid memory type: '{}'. Must be 'long_term' or 'daily'", memory_type_str),
+                    message: format!(
+                        "Invalid memory type: '{}'. Must be 'long_term' or 'daily'",
+                        memory_type_str
+                    ),
                 });
             }
         };
-        
+
         // Use the validated workspace path from tool initialization
         let workspace_path = &self.workspace_path;
-        
+
         // Validate workspace path using centralized validation
         use crate::utils::paths::validate_path;
         validate_path(workspace_path, "")
@@ -115,19 +122,27 @@ impl Tool for MemoryTool {
                 tool: self.name().to_string(),
                 message: format!("Invalid workspace path: {}", e),
             })?;
-        
-        tracing::info!("Memory tool executing: type={}, content_length={}", memory_type_str, content.len());
-        
+
+        tracing::info!(
+            "Memory tool executing: type={}, content_length={}",
+            memory_type_str,
+            content.len()
+        );
+
         // Execute based on memory type
         let result = match memory_type {
             MemoryType::LongTerm => {
-                self.memory_store.append_to_memory(content.to_string()).await
+                self.memory_store
+                    .append_to_memory(content.to_string())
+                    .await
             }
             MemoryType::Daily => {
-                self.memory_store.create_daily_note(content.to_string()).await
+                self.memory_store
+                    .create_daily_note(content.to_string())
+                    .await
             }
         };
-        
+
         // Handle result with proper error mapping
         match result {
             Ok(file_path) => {
@@ -135,20 +150,20 @@ impl Tool for MemoryTool {
                     MemoryType::LongTerm => "Memory updated",
                     MemoryType::Daily => "Daily note created",
                 };
-                
+
                 let response = json!({
                     "success": true,
                     "message": message,
                     "file_path": file_path,
                     "timestamp": chrono::Utc::now().to_rfc3339(),
                 });
-                
+
                 tracing::info!("Memory operation succeeded: {}", message);
                 Ok(serde_json::to_string(&response).unwrap())
             }
             Err(memory_error) => {
                 tracing::error!("Memory operation failed: {}", memory_error);
-                
+
                 // Map MemoryError to ToolError
                 match memory_error {
                     crate::memory::types::MemoryError::FileTooLarge { path, size, limit } => {
@@ -180,7 +195,10 @@ impl Tool for MemoryTool {
                         // Return execution error with source
                         Err(ToolError::ExecutionFailed {
                             tool: self.name().to_string(),
-                            message: format!("Storage operation '{}' failed: {}", operation, source),
+                            message: format!(
+                                "Storage operation '{}' failed: {}",
+                                operation, source
+                            ),
                         })
                     }
                     crate::memory::types::MemoryError::PathValidationFailed(msg) => {

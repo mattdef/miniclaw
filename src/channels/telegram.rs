@@ -7,23 +7,25 @@ use std::sync::Arc;
 use teloxide::prelude::*;
 use teloxide::types::{ChatId, Update};
 use thiserror::Error;
-use tokio::sync::mpsc;
 use tokio::sync::RwLock;
+use tokio::sync::mpsc;
 
 pub const TELEGRAM_CHANNEL_NAME: &str = "telegram";
 const TELEGRAM_MAX_MESSAGE_LENGTH: usize = 4096;
 
 #[derive(Error, Debug)]
 pub enum TelegramError {
-    #[error("Invalid token format: {0}. Check @BotFather (https://t.me/BotFather) for a valid token.")]
+    #[error(
+        "Invalid token format: {0}. Check @BotFather (https://t.me/BotFather) for a valid token."
+    )]
     InvalidTokenFormat(String),
-    
+
     #[error("Telegram API error: {0}")]
     ApiError(String),
-    
+
     #[error("Channel not initialized")]
     NotInitialized,
-    
+
     #[error("Send error: {0}")]
     SendError(#[from] mpsc::error::SendError<InboundMessage>),
 }
@@ -56,8 +58,9 @@ impl TelegramChannel {
         // Validate token format before creating bot
         if !is_valid_token_format(&token) {
             return Err(TelegramError::InvalidTokenFormat(
-                "Token must be in format: digits:alphanumeric (e.g., 123456789:ABC...)".to_string()
-            ).into());
+                "Token must be in format: digits:alphanumeric (e.g., 123456789:ABC...)".to_string(),
+            )
+            .into());
         }
 
         let bot = Bot::new(token);
@@ -89,9 +92,9 @@ impl TelegramChannel {
     fn process_inbound_message(msg: &Message) -> InboundMessage {
         let chat_id = msg.chat.id.0.to_string();
         let content = msg.text().unwrap_or("").to_string();
-        
+
         let mut inbound = InboundMessage::new(TELEGRAM_CHANNEL_NAME, chat_id, content);
-        
+
         // Add metadata
         if let Some(user) = &msg.from {
             inbound = inbound.with_metadata("user_id", serde_json::json!(user.id.0));
@@ -99,7 +102,7 @@ impl TelegramChannel {
                 inbound = inbound.with_metadata("username", serde_json::json!(username));
             }
         }
-        
+
         // msg.id is a MessageId(i32)
         inbound = inbound.with_metadata("message_id", serde_json::json!(msg.id.0));
 
@@ -116,13 +119,19 @@ impl TelegramChannel {
                 "Outbound message too long, truncating to {} characters",
                 TELEGRAM_MAX_MESSAGE_LENGTH
             );
-            message.content.chars().take(TELEGRAM_MAX_MESSAGE_LENGTH).collect::<String>()
+            message
+                .content
+                .chars()
+                .take(TELEGRAM_MAX_MESSAGE_LENGTH)
+                .collect::<String>()
         } else {
             message.content.clone()
         };
 
         // Parse chat_id
-        let chat_id: i64 = message.chat_id.parse()
+        let chat_id: i64 = message
+            .chat_id
+            .parse()
             .with_context(|| format!("Invalid chat_id format: {}", message.chat_id))?;
 
         // Build send message request
@@ -144,7 +153,8 @@ impl TelegramChannel {
                 Ok(())
             }
             Err(e) => {
-                let error_msg = format!("Failed to send Telegram message to chat {}: {}", chat_id, e);
+                let error_msg =
+                    format!("Failed to send Telegram message to chat {}: {}", chat_id, e);
                 tracing::error!("{}", error_msg);
                 Err(TelegramError::ApiError(error_msg).into())
             }
@@ -171,9 +181,10 @@ impl Channel for TelegramChannel {
 
         // Create channel for receiving outbound messages from ChatHub
         let (outbound_tx, mut outbound_rx) = mpsc::channel::<OutboundMessage>(100);
-        
+
         // Register this channel with the ChatHub so it can route messages to us
-        hub.register_channel(TELEGRAM_CHANNEL_NAME, outbound_tx).await?;
+        hub.register_channel(TELEGRAM_CHANNEL_NAME, outbound_tx)
+            .await?;
 
         // Clone bot for the dispatcher
         let bot = self.bot.clone();
@@ -185,53 +196,52 @@ impl Channel for TelegramChannel {
         // Spawn the inbound message handler (dispatcher)
         tokio::spawn(async move {
             // Create dispatcher that handles only text messages (Update::Message)
-            let handler = Update::filter_message()
-                .endpoint(move |msg: Message, _bot: Bot| {
-                    let inbound_tx = inbound_tx.clone();
-                    let whitelist = whitelist.clone();
-                    async move {
-                        // Extract user_id and check whitelist (NFR-S5)
-                        let user_id = msg.from.as_ref().map(|u| u.id.0 as i64);
-                        
-                        if let Some(user_id) = user_id {
-                            if !whitelist.is_allowed(user_id) {
-                                // User not whitelisted - silently drop message (AC 4)
-                                tracing::debug!("Message from non-whitelisted user {}", user_id);
-                                return Ok::<(), TelegramError>(());
-                            }
-                        } else {
-                            // No user info - reject for security
-                            tracing::debug!("Message without user info, dropping");
+            let handler = Update::filter_message().endpoint(move |msg: Message, _bot: Bot| {
+                let inbound_tx = inbound_tx.clone();
+                let whitelist = whitelist.clone();
+                async move {
+                    // Extract user_id and check whitelist (NFR-S5)
+                    let user_id = msg.from.as_ref().map(|u| u.id.0 as i64);
+
+                    if let Some(user_id) = user_id {
+                        if !whitelist.is_allowed(user_id) {
+                            // User not whitelisted - silently drop message (AC 4)
+                            tracing::debug!("Message from non-whitelisted user {}", user_id);
                             return Ok::<(), TelegramError>(());
                         }
-
-                        // Process the message
-                        let inbound = Self::process_inbound_message(&msg);
-
-                        // Log receipt
-                        tracing::info!(
-                            chat_id = %msg.chat.id.0,
-                            content_preview = %inbound.content.chars().take(50).collect::<String>(),
-                            "Received Telegram message"
-                        );
-
-                        // Send to ChatHub
-                        let tx = {
-                            let guard = inbound_tx.read().await;
-                            guard.clone()
-                        };
-
-                        if let Some(tx) = tx {
-                            if let Err(e) = tx.send(inbound).await {
-                                tracing::error!("Failed to send inbound message to ChatHub: {}", e);
-                            }
-                        } else {
-                            tracing::error!("Inbound channel not initialized");
-                        }
-
-                        Ok::<(), TelegramError>(())
+                    } else {
+                        // No user info - reject for security
+                        tracing::debug!("Message without user info, dropping");
+                        return Ok::<(), TelegramError>(());
                     }
-                });
+
+                    // Process the message
+                    let inbound = Self::process_inbound_message(&msg);
+
+                    // Log receipt
+                    tracing::info!(
+                        chat_id = %msg.chat.id.0,
+                        content_preview = %inbound.content.chars().take(50).collect::<String>(),
+                        "Received Telegram message"
+                    );
+
+                    // Send to ChatHub
+                    let tx = {
+                        let guard = inbound_tx.read().await;
+                        guard.clone()
+                    };
+
+                    if let Some(tx) = tx {
+                        if let Err(e) = tx.send(inbound).await {
+                            tracing::error!("Failed to send inbound message to ChatHub: {}", e);
+                        }
+                    } else {
+                        tracing::error!("Inbound channel not initialized");
+                    }
+
+                    Ok::<(), TelegramError>(())
+                }
+            });
 
             // Build dispatcher with shutdown support
             let mut dispatcher = Dispatcher::builder(bot, handler)
@@ -254,7 +264,7 @@ impl Channel for TelegramChannel {
 
         // Spawn outbound message handler
         let bot_for_outbound = self.bot.clone();
-        
+
         tokio::spawn(async move {
             loop {
                 tokio::select! {
@@ -288,25 +298,25 @@ impl Channel for TelegramChannel {
 pub fn is_valid_token_format(token: &str) -> bool {
     // Split by colon
     let parts: Vec<&str> = token.split(':').collect();
-    
+
     // Must have exactly 2 parts
     if parts.len() != 2 {
         return false;
     }
-    
+
     let bot_id = parts[0];
     let secret = parts[1];
-    
+
     // Bot ID must be all digits
     if bot_id.is_empty() || !bot_id.chars().all(|c| c.is_ascii_digit()) {
         return false;
     }
-    
+
     // Secret must be non-empty
     if secret.is_empty() {
         return false;
     }
-    
+
     true
 }
 
@@ -316,7 +326,9 @@ mod tests {
 
     #[test]
     fn test_valid_token_format() {
-        assert!(is_valid_token_format("123456789:ABCdefGHIjklMNOpqrsTUVwxyz"));
+        assert!(is_valid_token_format(
+            "123456789:ABCdefGHIjklMNOpqrsTUVwxyz"
+        ));
         assert!(is_valid_token_format("987654321:xyz123"));
         assert!(is_valid_token_format("1:a"));
     }
@@ -325,22 +337,22 @@ mod tests {
     fn test_invalid_token_format() {
         // Empty token
         assert!(!is_valid_token_format(""));
-        
+
         // No colon
         assert!(!is_valid_token_format("invalid"));
-        
+
         // Non-digit bot ID
         assert!(!is_valid_token_format("abc:def"));
-        
+
         // Empty secret
         assert!(!is_valid_token_format("123:"));
-        
+
         // Multiple colons
         assert!(!is_valid_token_format("123:abc:def"));
-        
+
         // Empty bot ID
         assert!(!is_valid_token_format(":secret"));
-        
+
         // Whitespace in bot ID
         assert!(!is_valid_token_format("123 456:secret"));
     }
@@ -348,16 +360,14 @@ mod tests {
     #[test]
     fn test_telegram_channel_creation_with_whitelist() {
         // Test creating a channel with empty whitelist
-        let channel = TelegramChannel::new(
-            "123456789:ABCdefGHIjklMNOpqrsTUVwxyz".to_string(),
-            vec![]
-        );
+        let channel =
+            TelegramChannel::new("123456789:ABCdefGHIjklMNOpqrsTUVwxyz".to_string(), vec![]);
         assert!(channel.is_ok());
 
         // Test creating a channel with whitelisted users
         let channel = TelegramChannel::new(
             "123456789:ABCdefGHIjklMNOpqrsTUVwxyz".to_string(),
-            vec![123_456_789, 987_654_321]
+            vec![123_456_789, 987_654_321],
         );
         assert!(channel.is_ok());
     }
@@ -365,10 +375,7 @@ mod tests {
     #[test]
     fn test_telegram_channel_creation_invalid_token() {
         // Should fail with invalid token
-        let channel = TelegramChannel::new(
-            "invalid-token".to_string(),
-            vec![]
-        );
+        let channel = TelegramChannel::new("invalid-token".to_string(), vec![]);
         assert!(channel.is_err());
     }
 

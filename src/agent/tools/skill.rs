@@ -7,11 +7,9 @@
 //! - delete_skill: Delete a user-created skill
 
 use crate::agent::tools::types::{Tool, ToolError, ToolExecutionContext, ToolResult};
-use crate::skills::{
-    BUILT_IN_TOOLS, SkillManagerError, SkillsManager, SkillParameter,
-};
+use crate::skills::{BUILT_IN_TOOLS, SkillManagerError, SkillParameter, SkillsManager};
 use async_trait::async_trait;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -23,8 +21,12 @@ pub struct CreateSkillTool {
 impl CreateSkillTool {
     /// Create a new CreateSkillTool
     pub fn new(workspace_path: PathBuf) -> Self {
-        let canonical_workspace = std::fs::canonicalize(&workspace_path)
-            .unwrap_or_else(|e| panic!("Failed to canonicalize workspace path {:?}: {}", workspace_path, e));
+        let canonical_workspace = std::fs::canonicalize(&workspace_path).unwrap_or_else(|e| {
+            panic!(
+                "Failed to canonicalize workspace path {:?}: {}",
+                workspace_path, e
+            )
+        });
 
         Self {
             workspace_path: canonical_workspace,
@@ -83,13 +85,12 @@ impl Tool for CreateSkillTool {
         _ctx: &ToolExecutionContext,
     ) -> ToolResult<String> {
         // Get required parameters
-        let name = args
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments {
+        let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+            ToolError::InvalidArguments {
                 tool: self.name().to_string(),
                 message: "Missing required parameter 'name'".to_string(),
-            })?;
+            }
+        })?;
 
         let description = args
             .get("description")
@@ -108,55 +109,66 @@ impl Tool for CreateSkillTool {
             })?;
 
         // Parse optional parameters
-        let parameters = if let Some(params_array) = args.get("parameters").and_then(|v| v.as_array()) {
-            params_array
-                .iter()
-                .map(|param| {
-                    let param_name = param
-                        .get("name")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let param_type = param
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("string")
-                        .to_string();
-                    let param_desc = param
-                        .get("description")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("")
-                        .to_string();
-                    let param_required = param
-                        .get("required")
-                        .and_then(|v| v.as_bool())
-                        .unwrap_or(true);
+        let parameters =
+            if let Some(params_array) = args.get("parameters").and_then(|v| v.as_array()) {
+                params_array
+                    .iter()
+                    .map(|param| {
+                        let param_name = param
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let param_type = param
+                            .get("type")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("string")
+                            .to_string();
+                        let param_desc = param
+                            .get("description")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let param_required = param
+                            .get("required")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(true);
 
-                    SkillParameter::new(&param_name, &param_desc, param_required, &param_type)
-                })
-                .collect()
-        } else {
-            Vec::new()
-        };
+                        SkillParameter::new(&param_name, &param_desc, param_required, &param_type)
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
 
         // Create skills manager with stored workspace path
         let skills_manager = SkillsManager::new(self.workspace_path.clone());
 
         // Load existing skills to check for conflicts
-        skills_manager.load_skills().await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Failed to load existing skills: {}", e),
-        })?;
+        skills_manager
+            .load_skills()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to load existing skills: {}", e),
+            })?;
 
         // Create the skill
-        match skills_manager.create_skill(
-            name.to_string(),
-            description.to_string(),
-            parameters,
-            implementation.to_string(),
-        ).await {
+        match skills_manager
+            .create_skill(
+                name.to_string(),
+                description.to_string(),
+                parameters,
+                implementation.to_string(),
+            )
+            .await
+        {
             Ok(skill) => {
-                let file_path = self.workspace_path.join("skills").join(&skill.name).join("SKILL.md");
+                let file_path = self
+                    .workspace_path
+                    .join("skills")
+                    .join(&skill.name)
+                    .join("SKILL.md");
                 let response = json!({
                     "success": true,
                     "message": "Skill created successfully",
@@ -175,24 +187,20 @@ impl Tool for CreateSkillTool {
                     message: format!("Invalid skill name: {}", reason),
                 })
             }
-            Err(SkillManagerError::NameConflict { name: _ }) => {
-                Err(ToolError::InvalidArguments {
-                    tool: self.name().to_string(),
-                    message: format!("Skill '{}' already exists", name),
-                })
-            }
+            Err(SkillManagerError::NameConflict { name: _ }) => Err(ToolError::InvalidArguments {
+                tool: self.name().to_string(),
+                message: format!("Skill '{}' already exists", name),
+            }),
             Err(SkillManagerError::BuiltInToolConflict { name: _ }) => {
                 Err(ToolError::InvalidArguments {
                     tool: self.name().to_string(),
                     message: format!("Name '{}' conflicts with a built-in tool", name),
                 })
             }
-            Err(e) => {
-                Err(ToolError::ExecutionFailed {
-                    tool: self.name().to_string(),
-                    message: format!("Failed to create skill: {}", e),
-                })
-            }
+            Err(e) => Err(ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to create skill: {}", e),
+            }),
         }
     }
 }
@@ -205,8 +213,12 @@ pub struct ListSkillsTool {
 impl ListSkillsTool {
     /// Create a new ListSkillsTool
     pub fn new(workspace_path: PathBuf) -> Self {
-        let canonical_workspace = std::fs::canonicalize(&workspace_path)
-            .unwrap_or_else(|e| panic!("Failed to canonicalize workspace path {:?}: {}", workspace_path, e));
+        let canonical_workspace = std::fs::canonicalize(&workspace_path).unwrap_or_else(|e| {
+            panic!(
+                "Failed to canonicalize workspace path {:?}: {}",
+                workspace_path, e
+            )
+        });
 
         Self {
             workspace_path: canonical_workspace,
@@ -240,10 +252,13 @@ impl Tool for ListSkillsTool {
         let skills_manager = SkillsManager::new(self.workspace_path.clone());
 
         // Load skills
-        skills_manager.load_skills().await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Failed to load skills: {}", e),
-        })?;
+        skills_manager
+            .load_skills()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to load skills: {}", e),
+            })?;
 
         // Get skill list
         match skills_manager.list_skills().await {
@@ -260,12 +275,10 @@ impl Tool for ListSkillsTool {
                 });
                 Ok(response.to_string())
             }
-            Err(e) => {
-                Err(ToolError::ExecutionFailed {
-                    tool: self.name().to_string(),
-                    message: format!("Failed to list skills: {}", e),
-                })
-            }
+            Err(e) => Err(ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to list skills: {}", e),
+            }),
         }
     }
 }
@@ -278,8 +291,12 @@ pub struct ReadSkillTool {
 impl ReadSkillTool {
     /// Create a new ReadSkillTool
     pub fn new(workspace_path: PathBuf) -> Self {
-        let canonical_workspace = std::fs::canonicalize(&workspace_path)
-            .unwrap_or_else(|e| panic!("Failed to canonicalize workspace path {:?}: {}", workspace_path, e));
+        let canonical_workspace = std::fs::canonicalize(&workspace_path).unwrap_or_else(|e| {
+            panic!(
+                "Failed to canonicalize workspace path {:?}: {}",
+                workspace_path, e
+            )
+        });
 
         Self {
             workspace_path: canonical_workspace,
@@ -315,21 +332,23 @@ impl Tool for ReadSkillTool {
         args: HashMap<String, Value>,
         _ctx: &ToolExecutionContext,
     ) -> ToolResult<String> {
-        let name = args
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments {
+        let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+            ToolError::InvalidArguments {
                 tool: self.name().to_string(),
                 message: "Missing required parameter 'name'".to_string(),
-            })?;
+            }
+        })?;
 
         let skills_manager = SkillsManager::new(self.workspace_path.clone());
 
         // Load skills first
-        skills_manager.load_skills().await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Failed to load skills: {}", e),
-        })?;
+        skills_manager
+            .load_skills()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to load skills: {}", e),
+            })?;
 
         // Read the skill
         match skills_manager.read_skill(name).await {
@@ -341,18 +360,14 @@ impl Tool for ReadSkillTool {
                 });
                 Ok(response.to_string())
             }
-            Err(SkillManagerError::SkillNotFound { name: _ }) => {
-                Err(ToolError::ExecutionFailed {
-                    tool: self.name().to_string(),
-                    message: format!("Skill '{}' not found", name),
-                })
-            }
-            Err(e) => {
-                Err(ToolError::ExecutionFailed {
-                    tool: self.name().to_string(),
-                    message: format!("Failed to read skill: {}", e),
-                })
-            }
+            Err(SkillManagerError::SkillNotFound { name: _ }) => Err(ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Skill '{}' not found", name),
+            }),
+            Err(e) => Err(ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to read skill: {}", e),
+            }),
         }
     }
 }
@@ -365,8 +380,12 @@ pub struct DeleteSkillTool {
 impl DeleteSkillTool {
     /// Create a new DeleteSkillTool
     pub fn new(workspace_path: PathBuf) -> Self {
-        let canonical_workspace = std::fs::canonicalize(&workspace_path)
-            .unwrap_or_else(|e| panic!("Failed to canonicalize workspace path {:?}: {}", workspace_path, e));
+        let canonical_workspace = std::fs::canonicalize(&workspace_path).unwrap_or_else(|e| {
+            panic!(
+                "Failed to canonicalize workspace path {:?}: {}",
+                workspace_path, e
+            )
+        });
 
         Self {
             workspace_path: canonical_workspace,
@@ -402,21 +421,23 @@ impl Tool for DeleteSkillTool {
         args: HashMap<String, Value>,
         _ctx: &ToolExecutionContext,
     ) -> ToolResult<String> {
-        let name = args
-            .get("name")
-            .and_then(|v| v.as_str())
-            .ok_or_else(|| ToolError::InvalidArguments {
+        let name = args.get("name").and_then(|v| v.as_str()).ok_or_else(|| {
+            ToolError::InvalidArguments {
                 tool: self.name().to_string(),
                 message: "Missing required parameter 'name'".to_string(),
-            })?;
+            }
+        })?;
 
         let skills_manager = SkillsManager::new(self.workspace_path.clone());
 
         // Load skills first
-        skills_manager.load_skills().await.map_err(|e| ToolError::ExecutionFailed {
-            tool: self.name().to_string(),
-            message: format!("Failed to load skills: {}", e),
-        })?;
+        skills_manager
+            .load_skills()
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to load skills: {}", e),
+            })?;
 
         // Delete the skill
         let built_in_list: Vec<String> = BUILT_IN_TOOLS.iter().map(|s| s.to_string()).collect();
@@ -435,18 +456,14 @@ impl Tool for DeleteSkillTool {
                     message: format!("Cannot delete built-in skill '{}'", name),
                 })
             }
-            Err(SkillManagerError::SkillNotFound { name: _ }) => {
-                Err(ToolError::ExecutionFailed {
-                    tool: self.name().to_string(),
-                    message: format!("Skill '{}' not found", name),
-                })
-            }
-            Err(e) => {
-                Err(ToolError::ExecutionFailed {
-                    tool: self.name().to_string(),
-                    message: format!("Failed to delete skill: {}", e),
-                })
-            }
+            Err(SkillManagerError::SkillNotFound { name: _ }) => Err(ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Skill '{}' not found", name),
+            }),
+            Err(e) => Err(ToolError::ExecutionFailed {
+                tool: self.name().to_string(),
+                message: format!("Failed to delete skill: {}", e),
+            }),
         }
     }
 }
@@ -500,7 +517,12 @@ mod tests {
 
         let result = tool.execute(args, &ctx).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing required parameter"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Missing required parameter")
+        );
     }
 
     #[tokio::test]
@@ -588,7 +610,12 @@ mod tests {
         let response: Value = serde_json::from_str(&result).unwrap();
 
         assert!(response["success"].as_bool().unwrap());
-        assert!(response["content"].as_str().unwrap().contains("Test description"));
+        assert!(
+            response["content"]
+                .as_str()
+                .unwrap()
+                .contains("Test description")
+        );
     }
 
     #[tokio::test]
@@ -633,7 +660,12 @@ mod tests {
         let response: Value = serde_json::from_str(&result).unwrap();
 
         assert!(response["success"].as_bool().unwrap());
-        assert!(response["message"].as_str().unwrap().contains("deleted successfully"));
+        assert!(
+            response["message"]
+                .as_str()
+                .unwrap()
+                .contains("deleted successfully")
+        );
     }
 
     #[tokio::test]
@@ -650,7 +682,12 @@ mod tests {
 
         let result = tool.execute(args, &ctx).await;
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Cannot delete built-in"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Cannot delete built-in")
+        );
     }
 
     #[tokio::test]

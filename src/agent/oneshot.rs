@@ -6,9 +6,9 @@
 
 use std::sync::Arc;
 
-use crate::agent::tools::ToolRegistry;
 use crate::agent::AgentLoop;
 use crate::agent::agent_loop::{ContextBuilder, Result as AgentResult};
+use crate::agent::tools::ToolRegistry;
 use crate::chat::{ChatHub, InboundMessage};
 use crate::config::Config;
 use crate::providers::{LlmMessage, LlmProvider, LlmRole, ProviderConfig, ProviderFactory};
@@ -49,10 +49,15 @@ pub async fn execute_one_shot(
     let provider = create_provider(config)
         .context("Failed to create LLM provider. Ensure your configuration has a valid API key.")?;
 
-    // Determine which model to use
+    // Determine which model to use: CLI override > provider_config > provider default
     let model = model_override
-        .or_else(|| config.model.clone())
-        .unwrap_or_else(|| "google/gemini-2.5-flash".to_string());
+        .or_else(|| {
+            config
+                .provider_config
+                .as_ref()
+                .map(|pc| pc.default_model().to_string())
+        })
+        .unwrap_or_else(|| provider.default_model());
 
     tracing::info!(model = %model, "Using model for one-shot execution");
 
@@ -78,96 +83,22 @@ pub async fn execute_one_shot(
         Arc::new(MinimalContextBuilder::new())
     };
 
-    // Create a tool registry with default tools
-    let tool_registry = Arc::new(ToolRegistry::new());
-    
-    // Register filesystem tool with workspace directory
-    let fs_tool = crate::agent::tools::filesystem::FilesystemTool::new(workspace_path.clone());
-    tool_registry
-        .register(Box::new(fs_tool))
-        .expect("Failed to register filesystem tool");
-
-    // Register exec tool with workspace directory
-    let exec_tool = crate::agent::tools::exec::ExecTool::new(workspace_path.clone())
-        .map_err(|e| anyhow::anyhow!("Failed to create exec tool: {}", e))?;
-    tool_registry
-        .register(Box::new(exec_tool))
-        .map_err(|e| anyhow::anyhow!("Failed to register exec tool: {}", e))?;
-
-    // Register web tool
-    let web_tool = crate::agent::tools::web::WebTool::new();
-    tool_registry
-        .register(Box::new(web_tool))
-        .map_err(|e| anyhow::anyhow!("Failed to register web tool: {}", e))?;
-
-    // Register spawn tool with workspace directory
-    let spawn_tool = crate::agent::tools::spawn::SpawnTool::new(
-        workspace_path.clone(),
-        config.spawn_log_output,
-    )
-    .map_err(|e| anyhow::anyhow!("Failed to create spawn tool: {}", e))?;
-    tool_registry
-        .register(Box::new(spawn_tool))
-        .map_err(|e| anyhow::anyhow!("Failed to register spawn tool: {}", e))?;
-
-    // Register cron tool and start scheduler
-    let cron_scheduler = crate::cron::CronScheduler::new();
-    
-    // Start the scheduler background task
-    let scheduler_for_loop = cron_scheduler.clone();
-    let _scheduler_handle = scheduler_for_loop.start_scheduler();
-    
-    let cron_tool = crate::agent::tools::cron::CronTool::new(cron_scheduler);
-    tool_registry
-        .register(Box::new(cron_tool))
-        .map_err(|e| anyhow::anyhow!("Failed to register cron tool: {}", e))?;
-
-    // Register memory tool with workspace directory
-    let workspace_path = dirs::home_dir()
-        .map(|home| home.join(".miniclaw").join("workspace"))
-        .unwrap_or_else(std::env::temp_dir);
-
-    // Create workspace directory if it doesn't exist
-    if !workspace_path.exists() {
-        std::fs::create_dir_all(&workspace_path)
-            .context("Failed to create workspace directory")?;
-    }
-
-    // Canonicalize for security
-    let canonical_workspace = std::fs::canonicalize(&workspace_path)
-        .context("Failed to canonicalize workspace path")?;
-
-    let memory_tool = crate::agent::tools::memory::MemoryTool::new(canonical_workspace.clone())
-        .map_err(|e| anyhow::anyhow!("Failed to create memory tool: {}", e))?;
-    tool_registry
-        .register(Box::new(memory_tool))
-        .map_err(|e| anyhow::anyhow!("Failed to register memory tool: {}", e))?;
-
-    // Register skill management tools
-    let create_skill_tool = crate::agent::tools::skill::CreateSkillTool::new(canonical_workspace.clone());
-    tool_registry
-        .register(Box::new(create_skill_tool))
-        .map_err(|e| anyhow::anyhow!("Failed to register create_skill tool: {}", e))?;
-
-    let list_skills_tool = crate::agent::tools::skill::ListSkillsTool::new(canonical_workspace.clone());
-    tool_registry
-        .register(Box::new(list_skills_tool))
-        .map_err(|e| anyhow::anyhow!("Failed to register list_skills tool: {}", e))?;
-
-    let read_skill_tool = crate::agent::tools::skill::ReadSkillTool::new(canonical_workspace.clone());
-    tool_registry
-        .register(Box::new(read_skill_tool))
-        .map_err(|e| anyhow::anyhow!("Failed to register read_skill tool: {}", e))?;
-
-    let delete_skill_tool = crate::agent::tools::skill::DeleteSkillTool::new(canonical_workspace);
-    tool_registry
-        .register(Box::new(delete_skill_tool))
-        .map_err(|e| anyhow::anyhow!("Failed to register delete_skill tool: {}", e))?;
+    // Create a tool registry with all default tools
+    // Use the configured default channel (defaults to "telegram" if not set)
+    let tool_registry = Arc::new(
+        ToolRegistry::with_all_default_tools(
+            workspace_path,
+            Arc::clone(&chat_hub),
+            config,
+            &config.default_channel,
+        )
+        .await,
+    );
 
     // Create a temporary session manager (not persisted)
     let temp_dir = std::env::temp_dir();
     let session_manager = Arc::new(tokio::sync::RwLock::new(
-        crate::session::SessionManager::new(temp_dir)
+        crate::session::SessionManager::new(temp_dir),
     ));
 
     // Create the agent loop with model override
@@ -230,10 +161,7 @@ impl ContextBuilder for MinimalContextBuilder {
              You are efficient, concise, and focused on providing practical assistance.",
         );
 
-        let user_message = LlmMessage::new(
-            LlmRole::User,
-            current_message.content.clone(),
-        );
+        let user_message = LlmMessage::new(LlmRole::User, current_message.content.clone());
 
         Ok(vec![system_message, user_message])
     }
@@ -241,32 +169,26 @@ impl ContextBuilder for MinimalContextBuilder {
 
 /// Creates an LLM provider from configuration
 fn create_provider(config: &Config) -> Result<Arc<dyn LlmProvider>> {
-    // First, try to use API key from config or environment
-    if let Some(api_key) = &config.api_key {
-        // Don't log the API key - security risk
-        tracing::debug!("Creating OpenRouter provider from config");
-        let provider_config = ProviderConfig::OpenRouter(
-            crate::providers::OpenRouterConfig::new(api_key.clone())
-                .with_model(config.model.clone().unwrap_or_else(|| "google/gemini-2.5-flash".to_string())),
-        );
-
-        let provider = ProviderFactory::create(provider_config)
-            .context("Failed to create OpenRouter provider")?;
-
+    // Use provider_config if available (only supported format)
+    if let Some(provider_config) = &config.provider_config {
+        tracing::debug!(provider_type = %provider_config.provider_type(), "Creating provider from provider_config");
+        let provider = ProviderFactory::create(provider_config.clone()).with_context(|| {
+            format!(
+                "Failed to create {} provider",
+                provider_config.provider_type()
+            )
+        })?;
         return Ok(Arc::from(provider));
     }
 
-    // If no API key, try Ollama (local provider)
-    tracing::debug!("No API key found, trying Ollama provider");
-    let provider_config = ProviderConfig::Ollama(
-        crate::providers::OllamaConfig::new()
-            .with_model(config.model.clone().unwrap_or_else(|| "llama3.2".to_string())),
-    );
+    // No provider_config - try Ollama as fallback (local provider, no API key needed)
+    tracing::debug!("No provider_config found, trying Ollama provider");
+    let provider_config = ProviderConfig::Ollama(crate::providers::OllamaConfig::new());
 
     ProviderFactory::create(provider_config)
         .map(Arc::from)
         .context("Failed to create Ollama provider")
-        .context("No LLM provider available. Please configure an API key in ~/.miniclaw/config.json or ensure Ollama is running locally")
+        .context("No LLM provider available. Please configure a provider in ~/.miniclaw/config.json or ensure Ollama is running locally")
 }
 
 #[cfg(test)]
@@ -274,33 +196,39 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_create_provider_with_api_key() {
+    fn test_create_provider_with_provider_config() {
         let config = Config {
-            api_key: Some("test-key".to_string()),
-            model: Some("test-model".to_string()),
+            api_key: None,
             telegram_token: None,
             allow_from: vec![],
             spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: Some(crate::providers::ProviderConfig::openai("test-key")),
+            model: None,
         };
 
         // This would need a runtime to test async
         // For now, just verify the config structure
-        assert!(config.api_key.is_some());
-        assert!(config.model.is_some());
+        assert!(config.provider_config.is_some());
+        assert_eq!(config.provider_config.unwrap().default_model(), "gpt-4o");
     }
 
     #[test]
-    fn test_create_provider_without_api_key() {
+    fn test_create_provider_without_provider_config() {
         let config = Config {
             api_key: None,
-            model: Some("llama3.2".to_string()),
             telegram_token: None,
             allow_from: vec![],
             spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: None,
+            model: None,
         };
 
-        // Without API key, should attempt Ollama
-        assert!(config.api_key.is_none());
+        // Without provider_config, should attempt Ollama
+        assert!(config.provider_config.is_none());
     }
 
     #[test]
@@ -317,10 +245,10 @@ mod tests {
         let builder = MinimalContextBuilder::new();
         let session = crate::session::Session::new("test".to_string(), "oneshot".to_string());
         let message = InboundMessage::new("cli", "test", "Hello".to_string());
-        
+
         let result = builder.build_context(&session, &message).await;
         assert!(result.is_ok());
-        
+
         let messages = result.unwrap();
         assert_eq!(messages.len(), 2); // System + User message
         assert!(messages[0].is_system());
@@ -330,21 +258,19 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_one_shot_with_invalid_config() {
-        // Test with config that has no API key and no Ollama available
+        // Test with config that has no provider_config and no Ollama available
         let config = Config {
             api_key: None,
-            model: None,
             telegram_token: None,
             allow_from: vec![],
             spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: None,
+            model: None,
         };
 
-        let result = execute_one_shot(
-            "test message".to_string(),
-            None,
-            &config,
-            false,
-        ).await;
+        let result = execute_one_shot("test message".to_string(), None, &config, false).await;
 
         // Should fail because no provider is available
         assert!(result.is_err());
@@ -354,39 +280,59 @@ mod tests {
 
     #[test]
     fn test_model_override_precedence() {
-        // Test that model override takes precedence over config model
+        // Test that CLI model override takes precedence over provider_config model
+        use crate::providers::{OpenAiConfig, ProviderConfig};
+
         let config = Config {
-            api_key: Some("test-key".to_string()),
-            model: Some("config-model".to_string()),
+            api_key: None,
             telegram_token: None,
             allow_from: vec![],
             spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: Some(ProviderConfig::OpenAi(OpenAiConfig::new("test-key"))),
+            model: None,
         };
 
-        // In real execution, the override would be used
+        // CLI override should take precedence
         let model_override = Some("override-model".to_string());
         let effective_model = model_override
-            .or_else(|| config.model.clone())
+            .or_else(|| {
+                config
+                    .provider_config
+                    .as_ref()
+                    .map(|pc| pc.default_model().to_string())
+            })
             .unwrap_or_else(|| "default".to_string());
-        
+
         assert_eq!(effective_model, "override-model");
     }
 
     #[test]
-    fn test_model_fallback_chain() {
-        // Test model selection fallback: override → config → default
+    fn test_model_from_provider_config() {
+        // Test model selection from provider_config when no CLI override
+        use crate::providers::{OpenAiConfig, ProviderConfig};
+
         let config = Config {
-            api_key: Some("test-key".to_string()),
-            model: None,
+            api_key: None,
             telegram_token: None,
             allow_from: vec![],
             spawn_log_output: false,
+            default_channel: "telegram".to_string(),
+            provider_type: None,
+            provider_config: Some(ProviderConfig::OpenAi(OpenAiConfig::new("test-key"))),
+            model: None,
         };
 
         let effective_model = None
-            .or_else(|| config.model.clone())
-            .unwrap_or_else(|| "google/gemini-2.5-flash".to_string());
-        
-        assert_eq!(effective_model, "google/gemini-2.5-flash");
+            .or_else(|| {
+                config
+                    .provider_config
+                    .as_ref()
+                    .map(|pc| pc.default_model().to_string())
+            })
+            .unwrap_or_else(|| "default".to_string());
+
+        assert_eq!(effective_model, "gpt-4o");
     }
 }

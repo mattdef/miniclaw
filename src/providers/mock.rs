@@ -5,7 +5,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use crate::providers::{LlmMessage, LlmProvider, LlmResponse, LlmToolCall, ProviderError};
+use crate::providers::{
+    LlmMessage, LlmProvider, LlmResponse, LlmToolCall, ModelInfo, ProviderError,
+};
 
 /// Mock provider for testing
 ///
@@ -159,6 +161,10 @@ impl LlmProvider for MockLlmProvider {
 
     fn provider_name(&self) -> &'static str {
         self.name
+    }
+
+    async fn list_models(&self) -> Result<Vec<ModelInfo>, ProviderError> {
+        Ok(vec![ModelInfo::new("mock-model", false)])
     }
 }
 

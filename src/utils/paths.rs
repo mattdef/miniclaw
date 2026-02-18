@@ -123,12 +123,12 @@ async fn validate_non_existent_path(
     }
 
     // Canonicalize the existing parent
-    let canonical_parent = tokio::fs::canonicalize(current)
-        .await
-        .map_err(|e| PathValidationError::CanonicalizationFailed {
+    let canonical_parent = tokio::fs::canonicalize(current).await.map_err(|e| {
+        PathValidationError::CanonicalizationFailed {
             path: user_path.to_string(),
             source: e,
-        })?;
+        }
+    })?;
 
     // Build the final path by appending the non-existent components
     let mut result = canonical_parent;
@@ -217,9 +217,9 @@ pub fn is_system_path(path: &Path) -> bool {
 /// * `Ok(PathBuf)` - The canonicalized base directory
 /// * `Err(PathValidationError)` - If the base directory is invalid
 pub async fn canonicalize_base_dir(base_dir: &Path) -> Result<PathBuf, PathValidationError> {
-    tokio::fs::canonicalize(base_dir)
-        .await
-        .map_err(|e| PathValidationError::InvalidBaseDirectory(format!("{}: {}", base_dir.display(), e)))
+    tokio::fs::canonicalize(base_dir).await.map_err(|e| {
+        PathValidationError::InvalidBaseDirectory(format!("{}: {}", base_dir.display(), e))
+    })
 }
 
 #[cfg(test)]
@@ -266,9 +266,12 @@ mod tests {
         assert!(result.is_err());
 
         match result.unwrap_err() {
-            PathValidationError::OutsideBaseDirectory(_) => {},
-            PathValidationError::SystemPathBlocked(_) => {},
-            other => panic!("Expected OutsideBaseDirectory or SystemPathBlocked, got {:?}", other),
+            PathValidationError::OutsideBaseDirectory(_) => {}
+            PathValidationError::SystemPathBlocked(_) => {}
+            other => panic!(
+                "Expected OutsideBaseDirectory or SystemPathBlocked, got {:?}",
+                other
+            ),
         }
     }
 
@@ -306,7 +309,9 @@ mod tests {
         assert!(is_system_path(Path::new("C:\\WINDOWS\\system32")));
         assert!(is_system_path(Path::new("C:\\Program Files\\App")));
         assert!(is_system_path(Path::new("c:\\program files (x86)\\app")));
-        assert!(is_system_path(Path::new("C:\\ProgramData\\Microsoft\\Windows")));
+        assert!(is_system_path(Path::new(
+            "C:\\ProgramData\\Microsoft\\Windows"
+        )));
 
         assert!(!is_system_path(Path::new("C:\\Users\\user\\file.txt")));
         assert!(!is_system_path(Path::new("D:\\Data\\file.txt")));
@@ -326,7 +331,7 @@ mod tests {
         assert!(result.is_err());
 
         match result.unwrap_err() {
-            PathValidationError::InvalidBaseDirectory(_) => {},
+            PathValidationError::InvalidBaseDirectory(_) => {}
             other => panic!("Expected InvalidBaseDirectory, got {:?}", other),
         }
     }

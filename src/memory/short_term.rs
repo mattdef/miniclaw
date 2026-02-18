@@ -404,11 +404,16 @@ mod tests {
     async fn test_entry_with_special_characters() {
         let memory = ShortTermMemory::new();
 
-        memory.add_entry("Special: !@#$%^&*()_+-=[]{}|;':\",./<>?".to_string()).await;
+        memory
+            .add_entry("Special: !@#$%^&*()_+-=[]{}|;':\",./<>?".to_string())
+            .await;
 
         let entries = memory.get_entries().await;
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].content, "Special: !@#$%^&*()_+-=[]{}|;':\",./<>?");
+        assert_eq!(
+            entries[0].content,
+            "Special: !@#$%^&*()_+-=[]{}|;':\",./<>?"
+        );
     }
 
     // Test 18: Multiple clear operations

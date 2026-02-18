@@ -15,14 +15,17 @@ pub mod web;
 
 // Re-export types from types module for backward compatibility
 pub use types::{
-    validate_args_against_schema, Tool, ToolDefinition, ToolError, ToolExecutionContext,
-    ToolResult,
+    Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolResult, validate_args_against_schema,
 };
 
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::RwLock;
+
+use crate::config::Config;
 
 /// Registry for managing available tools
 ///
@@ -55,7 +58,7 @@ impl ToolRegistry {
     /// # Arguments
     /// * `hub` - The ChatHub for sending messages
     /// * `default_channel` - The default channel to use for message tool
-    pub fn with_default_tools(
+    pub async fn with_default_tools(
         hub: std::sync::Arc<crate::chat::ChatHub>,
         default_channel: impl Into<String>,
     ) -> Self {
@@ -65,7 +68,151 @@ impl ToolRegistry {
                 hub,
                 default_channel,
             )))
+            .await
             .expect("default tool registration must succeed");
+        registry
+    }
+
+    /// Creates a new registry with all default tools pre-registered
+    ///
+    /// # Arguments
+    /// * `workspace_path` - The workspace directory for tools that need filesystem access
+    /// * `chat_hub` - The ChatHub for the message tool
+    /// * `config` - Application config for tool-specific settings
+    /// * `default_channel` - The default channel to use for the message tool
+    ///
+    /// # Returns
+    /// A ToolRegistry with all default tools registered. If a tool fails to register,
+    /// a warning is logged and the registry continues without that tool (graceful degradation).
+    pub async fn with_all_default_tools(
+        workspace_path: PathBuf,
+        chat_hub: Arc<crate::chat::ChatHub>,
+        config: &Config,
+        default_channel: impl Into<String>,
+    ) -> Self {
+        let registry = Self::new();
+        let default_channel = default_channel.into();
+
+        // Register filesystem tool
+        if let Err(e) = registry
+            .register(Box::new(crate::agent::tools::filesystem::FilesystemTool::new(
+                workspace_path.clone(),
+            )))
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to register filesystem tool, continuing without it");
+        }
+
+        // Register exec tool
+        match crate::agent::tools::exec::ExecTool::new(workspace_path.clone()) {
+            Ok(exec_tool) => {
+                if let Err(e) = registry.register(Box::new(exec_tool)).await {
+                    tracing::warn!(error = %e, "Failed to register exec tool, continuing without it");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create exec tool, continuing without it");
+            }
+        }
+
+        // Register web tool
+        if let Err(e) = registry
+            .register(Box::new(crate::agent::tools::web::WebTool::new()))
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to register web tool, continuing without it");
+        }
+
+        // Register spawn tool
+        match crate::agent::tools::spawn::SpawnTool::new(
+            workspace_path.clone(),
+            config.spawn_log_output,
+        ) {
+            Ok(spawn_tool) => {
+                if let Err(e) = registry.register(Box::new(spawn_tool)).await {
+                    tracing::warn!(error = %e, "Failed to register spawn tool, continuing without it");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create spawn tool, continuing without it");
+            }
+        }
+
+        // Register cron tool and start scheduler
+        let cron_scheduler = crate::cron::CronScheduler::new();
+        let cron_tool = crate::agent::tools::cron::CronTool::new(cron_scheduler.clone());
+        
+        if let Err(e) = registry.register(Box::new(cron_tool)).await {
+            tracing::warn!(error = %e, "Failed to register cron tool, continuing without it");
+        } else {
+            // Start cron scheduler background task
+            let _scheduler_handle = cron_scheduler.start_scheduler();
+            tracing::info!("Cron scheduler started");
+        }
+
+        // Register memory tool
+        match crate::agent::tools::memory::MemoryTool::new(workspace_path.clone()) {
+            Ok(memory_tool) => {
+                if let Err(e) = registry.register(Box::new(memory_tool)).await {
+                    tracing::warn!(error = %e, "Failed to register memory tool, continuing without it");
+                }
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "Failed to create memory tool, continuing without it");
+            }
+        }
+
+        // Register skill management tools
+        if let Err(e) = registry
+            .register(Box::new(crate::agent::tools::skill::CreateSkillTool::new(
+                workspace_path.clone(),
+            )))
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to register create_skill tool, continuing without it");
+        }
+
+        if let Err(e) = registry
+            .register(Box::new(crate::agent::tools::skill::ListSkillsTool::new(
+                workspace_path.clone(),
+            )))
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to register list_skills tool, continuing without it");
+        }
+
+        if let Err(e) = registry
+            .register(Box::new(crate::agent::tools::skill::ReadSkillTool::new(
+                workspace_path.clone(),
+            )))
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to register read_skill tool, continuing without it");
+        }
+
+        if let Err(e) = registry
+            .register(Box::new(crate::agent::tools::skill::DeleteSkillTool::new(
+                workspace_path.clone(),
+            )))
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to register delete_skill tool, continuing without it");
+        }
+
+        // Register message tool
+        if let Err(e) = registry
+            .register(Box::new(crate::agent::tools::message::MessageTool::new(
+                chat_hub,
+                default_channel,
+            )))
+            .await
+        {
+            tracing::warn!(error = %e, "Failed to register message tool, continuing without it");
+        }
+
+        let tool_count = registry.len().await;
+        tracing::info!(tool_count = tool_count, "Tool registry initialized with default tools");
+
         registry
     }
 
@@ -76,11 +223,11 @@ impl ToolRegistry {
     ///
     /// # Errors
     /// Returns `ToolError::ExecutionFailed` if a tool with the same name is already registered
-    pub fn register(&self, tool: Box<dyn Tool>) -> types::ToolResult<()> {
+    pub async fn register(&self, tool: Box<dyn Tool>) -> types::ToolResult<()> {
         let name = tool.name().to_string();
-        
-        let mut tools = self.tools.write().unwrap();
-        
+
+        let mut tools = self.tools.write().await;
+
         if tools.contains_key(&name) {
             return Err(ToolError::ExecutionFailed {
                 tool: name.clone(),
@@ -92,11 +239,11 @@ impl ToolRegistry {
         }
 
         tools.insert(name, tool);
-        
+
         // Invalidate cache
-        let mut cache = self.definitions_cache.write().unwrap();
+        let mut cache = self.definitions_cache.write().await;
         *cache = None;
-        
+
         Ok(())
     }
 
@@ -107,16 +254,16 @@ impl ToolRegistry {
     ///
     /// # Returns
     /// `true` if the tool was found and removed, `false` otherwise
-    pub fn unregister(&self, name: &str) -> bool {
-        let mut tools = self.tools.write().unwrap();
+    pub async fn unregister(&self, name: &str) -> bool {
+        let mut tools = self.tools.write().await;
         let removed = tools.remove(name).is_some();
-        
+
         if removed {
             // Invalidate cache
-            let mut cache = self.definitions_cache.write().unwrap();
+            let mut cache = self.definitions_cache.write().await;
             *cache = None;
         }
-        
+
         removed
     }
 
@@ -124,8 +271,8 @@ impl ToolRegistry {
     ///
     /// # Arguments
     /// * `name` - The name of the tool to check
-    pub fn contains(&self, name: &str) -> bool {
-        let tools = self.tools.read().unwrap();
+    pub async fn contains(&self, name: &str) -> bool {
+        let tools = self.tools.read().await;
         tools.contains_key(name)
     }
 
@@ -133,23 +280,29 @@ impl ToolRegistry {
     ///
     /// # Returns
     /// A vector of tuples containing (name, description, parameters) for each tool
-    pub fn list_tools(&self) -> Vec<(String, String, Value)> {
-        let tools = self.tools.read().unwrap();
+    pub async fn list_tools(&self) -> Vec<(String, String, Value)> {
+        let tools = self.tools.read().await;
         tools
             .values()
-            .map(|t| (t.name().to_string(), t.description().to_string(), t.parameters()))
+            .map(|t| {
+                (
+                    t.name().to_string(),
+                    t.description().to_string(),
+                    t.parameters(),
+                )
+            })
             .collect()
     }
 
     /// Returns the number of registered tools
-    pub fn len(&self) -> usize {
-        let tools = self.tools.read().unwrap();
+    pub async fn len(&self) -> usize {
+        let tools = self.tools.read().await;
         tools.len()
     }
 
     /// Checks if the registry is empty
-    pub fn is_empty(&self) -> bool {
-        let tools = self.tools.read().unwrap();
+    pub async fn is_empty(&self) -> bool {
+        let tools = self.tools.read().await;
         tools.is_empty()
     }
 
@@ -160,17 +313,17 @@ impl ToolRegistry {
     ///
     /// # Caching
     /// Results are cached after first call. Cache is invalidated on register/unregister.
-    pub fn get_tool_definitions(&self) -> Vec<Value> {
+    pub async fn get_tool_definitions(&self) -> Vec<Value> {
         // Check cache first
         {
-            let cache = self.definitions_cache.read().unwrap();
+            let cache = self.definitions_cache.read().await;
             if let Some(ref cached) = *cache {
                 return cached.clone();
             }
         }
-        
+
         // Generate definitions
-        let tools = self.tools.read().unwrap();
+        let tools = self.tools.read().await;
         let definitions: Vec<Value> = tools
             .values()
             .map(|tool| {
@@ -185,13 +338,13 @@ impl ToolRegistry {
                 })
             })
             .collect();
-        
+
         // Update cache
         {
-            let mut cache = self.definitions_cache.write().unwrap();
+            let mut cache = self.definitions_cache.write().await;
             *cache = Some(definitions.clone());
         }
-        
+
         definitions
     }
 
@@ -199,8 +352,8 @@ impl ToolRegistry {
     ///
     /// Similar to `get_tool_definitions()` but returns strongly-typed
     /// ToolDefinition structs instead of JSON values.
-    pub fn get_definitions(&self) -> Vec<ToolDefinition> {
-        let tools = self.tools.read().unwrap();
+    pub async fn get_definitions(&self) -> Vec<ToolDefinition> {
+        let tools = self.tools.read().await;
         tools
             .values()
             .map(|tool| tool.to_tool_definition())
@@ -253,22 +406,23 @@ impl ToolRegistry {
     ) -> types::ToolResult<String> {
         // Get tool schema and validate args (under read lock)
         let schema = {
-            let tools = self.tools.read().unwrap();
+            let tools = self.tools.read().await;
             let tool = tools
                 .get(name)
                 .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
             tool.parameters()
         };
-        
+
         validate_args_against_schema(&args, &schema, name)?;
 
-        // Clone the tool for execution (Box<dyn Tool> can't be cloned, so we keep the read lock)
-        // Execute with timeout
-        let tools = self.tools.read().unwrap();
+        // Get the tool and clone it for execution
+        // With tokio::sync::RwLock, the guard is Send so we can hold it across await
+        let tools = self.tools.read().await;
         let tool = tools
             .get(name)
             .ok_or_else(|| ToolError::NotFound(name.to_string()))?;
-            
+
+        // Execute with timeout
         match tokio::time::timeout(timeout, tool.execute(args, ctx)).await {
             Ok(result) => result,
             Err(_) => Err(ToolError::Timeout {
@@ -329,31 +483,31 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_tool_registry_creation() {
+    #[tokio::test]
+    async fn test_tool_registry_creation() {
         let registry = ToolRegistry::new();
-        assert!(registry.is_empty());
-        assert_eq!(registry.len(), 0);
+        assert!(registry.is_empty().await);
+        assert_eq!(registry.len().await, 0);
     }
 
-    #[test]
-    fn test_tool_registration() {
+    #[tokio::test]
+    async fn test_tool_registration() {
         let registry = ToolRegistry::new();
         let tool = TestTool;
 
-        registry.register(Box::new(tool)).unwrap();
-        assert_eq!(registry.len(), 1);
-        assert!(!registry.is_empty());
+        registry.register(Box::new(tool)).await.unwrap();
+        assert_eq!(registry.len().await, 1);
+        assert!(!registry.is_empty().await);
     }
 
-    #[test]
-    fn test_duplicate_registration_fails() {
+    #[tokio::test]
+    async fn test_duplicate_registration_fails() {
         let registry = ToolRegistry::new();
         let tool1 = TestTool;
         let tool2 = TestTool;
 
-        registry.register(Box::new(tool1)).unwrap();
-        let result = registry.register(Box::new(tool2));
+        registry.register(Box::new(tool1)).await.unwrap();
+        let result = registry.register(Box::new(tool2)).await;
 
         assert!(result.is_err());
         match result.unwrap_err() {
@@ -366,43 +520,43 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_contains() {
+    #[tokio::test]
+    async fn test_contains() {
         let registry = ToolRegistry::new();
         let tool = TestTool;
 
-        assert!(!registry.contains("test_tool"));
+        assert!(!registry.contains("test_tool").await);
 
-        registry.register(Box::new(tool)).unwrap();
+        registry.register(Box::new(tool)).await.unwrap();
 
-        assert!(registry.contains("test_tool"));
-        assert!(!registry.contains("nonexistent"));
+        assert!(registry.contains("test_tool").await);
+        assert!(!registry.contains("nonexistent").await);
     }
 
-    #[test]
-    fn test_unregister() {
+    #[tokio::test]
+    async fn test_unregister() {
         let registry = ToolRegistry::new();
         let tool = TestTool;
 
-        registry.register(Box::new(tool)).unwrap();
-        assert_eq!(registry.len(), 1);
+        registry.register(Box::new(tool)).await.unwrap();
+        assert_eq!(registry.len().await, 1);
 
-        let removed = registry.unregister("test_tool");
+        let removed = registry.unregister("test_tool").await;
         assert!(removed);
-        assert_eq!(registry.len(), 0);
+        assert_eq!(registry.len().await, 0);
 
-        let not_found = registry.unregister("nonexistent");
+        let not_found = registry.unregister("nonexistent").await;
         assert!(!not_found);
     }
 
-    #[test]
-    fn test_list_tools() {
+    #[tokio::test]
+    async fn test_list_tools() {
         let registry = ToolRegistry::new();
         let tool = TestTool;
 
-        registry.register(Box::new(tool)).unwrap();
+        registry.register(Box::new(tool)).await.unwrap();
 
-        let tools = registry.list_tools();
+        let tools = registry.list_tools().await;
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0].0, "test_tool");
         assert_eq!(tools[0].1, "A test tool");
@@ -444,7 +598,7 @@ mod tests {
         let registry = ToolRegistry::new();
         let tool = TestTool;
 
-        registry.register(Box::new(tool)).unwrap();
+        registry.register(Box::new(tool)).await.unwrap();
 
         let mut args = HashMap::new();
         args.insert("input".to_string(), json!("world"));
@@ -473,14 +627,14 @@ mod tests {
         }
     }
 
-    #[test]
-    fn test_get_tool_definitions() {
+    #[tokio::test]
+    async fn test_get_tool_definitions() {
         let registry = ToolRegistry::new();
         let tool = TestTool;
 
-        registry.register(Box::new(tool)).unwrap();
+        registry.register(Box::new(tool)).await.unwrap();
 
-        let definitions = registry.get_tool_definitions();
+        let definitions = registry.get_tool_definitions().await;
         assert_eq!(definitions.len(), 1);
 
         let def = &definitions[0];
@@ -490,14 +644,14 @@ mod tests {
         assert_eq!(def["function"]["strict"], false);
     }
 
-    #[test]
-    fn test_get_definitions() {
+    #[tokio::test]
+    async fn test_get_definitions() {
         let registry = ToolRegistry::new();
         let tool = TestTool;
 
-        registry.register(Box::new(tool)).unwrap();
+        registry.register(Box::new(tool)).await.unwrap();
 
-        let definitions = registry.get_definitions();
+        let definitions = registry.get_definitions().await;
         assert_eq!(definitions.len(), 1);
 
         let def = &definitions[0];
@@ -506,14 +660,14 @@ mod tests {
         assert_eq!(def.r#type, "function");
     }
 
-    #[test]
-    fn test_default() {
+    #[tokio::test]
+    async fn test_default() {
         let registry: ToolRegistry = Default::default();
-        assert!(registry.is_empty());
+        assert!(registry.is_empty().await);
     }
 
-    #[test]
-    fn test_multiple_tools() {
+    #[tokio::test]
+    async fn test_multiple_tools() {
         struct AnotherTool;
 
         #[async_trait::async_trait]
@@ -540,16 +694,52 @@ mod tests {
         }
 
         let registry = ToolRegistry::new();
-        registry.register(Box::new(TestTool)).unwrap();
-        registry.register(Box::new(AnotherTool)).unwrap();
+        registry.register(Box::new(TestTool)).await.unwrap();
+        registry.register(Box::new(AnotherTool)).await.unwrap();
 
-        assert_eq!(registry.len(), 2);
+        assert_eq!(registry.len().await, 2);
 
-        let tools = registry.list_tools();
+        let tools = registry.list_tools().await;
         assert_eq!(tools.len(), 2);
 
         let names: Vec<String> = tools.iter().map(|(n, _, _)| n.clone()).collect();
         assert!(names.contains(&"test_tool".to_string()));
         assert!(names.contains(&"another_tool".to_string()));
+    }
+
+    #[tokio::test]
+    async fn test_with_all_default_tools() {
+        use crate::chat::ChatHub;
+        use crate::config::Config;
+        use std::path::PathBuf;
+
+        let workspace_path = PathBuf::from(std::env::temp_dir());
+        let chat_hub = Arc::new(ChatHub::new());
+        let config = Config::default();
+
+        let registry = ToolRegistry::with_all_default_tools(
+            workspace_path,
+            chat_hub,
+            &config,
+            "test_channel",
+        )
+        .await;
+
+        // Should have registered all tools
+        assert!(!registry.is_empty().await);
+        assert!(registry.len().await >= 9); // At least 9 default tools
+
+        // Verify specific tools are registered
+        assert!(registry.contains("filesystem").await);
+        assert!(registry.contains("exec").await);
+        assert!(registry.contains("web").await);
+        assert!(registry.contains("spawn").await);
+        assert!(registry.contains("cron").await);
+        assert!(registry.contains("write_memory").await);
+        assert!(registry.contains("create_skill").await);
+        assert!(registry.contains("list_skills").await);
+        assert!(registry.contains("read_skill").await);
+        assert!(registry.contains("delete_skill").await);
+        assert!(registry.contains("message").await);
     }
 }

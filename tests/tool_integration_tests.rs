@@ -9,7 +9,7 @@
 use miniclaw::agent::tools::{
     Tool, ToolDefinition, ToolError, ToolExecutionContext, ToolRegistry, ToolResult,
 };
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 
 /// Mock tool for testing tool system integration
@@ -84,10 +84,7 @@ impl Tool for TestTool {
             }
         })?;
 
-        let multiplier = args
-            .get("multiplier")
-            .and_then(|v| v.as_u64())
-            .unwrap_or(1);
+        let multiplier = args.get("multiplier").and_then(|v| v.as_u64()).unwrap_or(1);
 
         Ok(format!("{} x {}", input, multiplier))
     }
@@ -164,7 +161,10 @@ fn test_tool_definitions_for_llm() {
     let registry = ToolRegistry::new();
 
     registry
-        .register(Box::new(TestTool::new("calculator", "Performs calculations")))
+        .register(Box::new(TestTool::new(
+            "calculator",
+            "Performs calculations",
+        )))
         .unwrap();
 
     // Get JSON definitions
@@ -175,7 +175,11 @@ fn test_tool_definitions_for_llm() {
     assert_eq!(def["type"], "function");
     assert_eq!(def["function"]["name"], "calculator");
     assert_eq!(def["function"]["description"], "Performs calculations");
-    assert!(def["function"]["parameters"]["properties"].get("input").is_some());
+    assert!(
+        def["function"]["parameters"]["properties"]
+            .get("input")
+            .is_some()
+    );
 
     // Get typed definitions
     let typed_defs = registry.get_definitions();
@@ -420,7 +424,10 @@ async fn test_complex_parameter_handling() {
                 })?;
 
             let int_field = args.get("int_field").and_then(|v| v.as_i64()).unwrap_or(0);
-            let bool_field = args.get("bool_field").and_then(|v| v.as_bool()).unwrap_or(false);
+            let bool_field = args
+                .get("bool_field")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
 
             Ok(format!(
                 "string={}, int={}, bool={}",
@@ -436,14 +443,8 @@ async fn test_complex_parameter_handling() {
     args.insert("string_field".to_string(), json!("test"));
     args.insert("int_field".to_string(), json!(42));
     args.insert("bool_field".to_string(), json!(true));
-    args.insert(
-        "array_field".to_string(),
-        json!(["item1", "item2"]),
-    );
-    args.insert(
-        "object_field".to_string(),
-        json!({"nested": "value"}),
-    );
+    args.insert("array_field".to_string(), json!(["item1", "item2"]));
+    args.insert("object_field".to_string(), json!({"nested": "value"}));
 
     let ctx = ToolExecutionContext::default();
     let result = registry.execute_tool("complex_tool", args, &ctx).await;
@@ -525,21 +526,21 @@ async fn test_error_messages_are_clear() {
 #[tokio::test]
 async fn test_tool_result_formatting() {
     let registry = ToolRegistry::new();
-    
+
     registry
         .register(Box::new(TestTool::new("formatter", "Formats results")))
         .unwrap();
-    
+
     let mut args = HashMap::new();
     args.insert("input".to_string(), json!("Hello World"));
     args.insert("multiplier".to_string(), json!(2));
-    
+
     let ctx = ToolExecutionContext::default();
     let result = registry.execute_tool("formatter", args, &ctx).await;
-    
+
     assert!(result.is_ok());
     let formatted_result = result.unwrap();
-    
+
     // Verify result is a properly formatted string
     assert!(formatted_result.contains("Hello World"));
     assert!(formatted_result.contains("2"));
@@ -550,21 +551,21 @@ async fn test_tool_result_formatting() {
 #[tokio::test]
 async fn test_tool_result_format_consistency() {
     struct JsonResultTool;
-    
+
     #[async_trait::async_trait]
     impl Tool for JsonResultTool {
         fn name(&self) -> &str {
             "json_tool"
         }
-        
+
         fn description(&self) -> &str {
             "Returns JSON formatted results"
         }
-        
+
         fn parameters(&self) -> Value {
             json!({"type": "object", "properties": {}, "required": []})
         }
-        
+
         async fn execute(
             &self,
             _args: HashMap<String, Value>,
@@ -574,17 +575,21 @@ async fn test_tool_result_format_consistency() {
             Ok(json!({"status": "success", "data": 42}).to_string())
         }
     }
-    
+
     let registry = ToolRegistry::new();
     registry.register(Box::new(JsonResultTool)).unwrap();
-    
+
     let result = registry
-        .execute_tool("json_tool", HashMap::new(), &ToolExecutionContext::default())
+        .execute_tool(
+            "json_tool",
+            HashMap::new(),
+            &ToolExecutionContext::default(),
+        )
         .await;
-    
+
     assert!(result.is_ok());
     let json_string = result.unwrap();
-    
+
     // Verify it's a valid JSON string
     let parsed: serde_json::Value = serde_json::from_str(&json_string).unwrap();
     assert_eq!(parsed["status"], "success");
@@ -595,32 +600,35 @@ async fn test_tool_result_format_consistency() {
 #[test]
 fn test_web_tool_registration() {
     use miniclaw::agent::tools::{ToolRegistry, web::WebTool};
-    
+
     let registry = ToolRegistry::new();
-    
+
     // Register WebTool as done in oneshot.rs
     let web_tool = WebTool::new();
     registry.register(Box::new(web_tool)).unwrap();
-    
+
     // Verify tool is registered
     assert!(registry.contains("web"));
     assert_eq!(registry.len(), 1);
-    
+
     // Verify it appears in listings
     let tools = registry.list_tools();
     assert_eq!(tools.len(), 1);
-    
+
     let (name, desc, _params) = &tools[0];
     assert_eq!(name, "web");
     assert!(desc.contains("Fetches web content"));
     assert!(desc.contains("HTTP/HTTPS only"));
-    
+
     // Verify tool definition is correct
     let definitions = registry.get_tool_definitions();
     assert_eq!(definitions.len(), 1);
     assert_eq!(definitions[0]["function"]["name"], "web");
     assert!(definitions[0]["function"]["parameters"]["properties"]["url"].is_object());
-    assert_eq!(definitions[0]["function"]["parameters"]["required"][0], "url");
+    assert_eq!(
+        definitions[0]["function"]["parameters"]["required"][0],
+        "url"
+    );
 }
 
 /// Integration test: Verify SpawnTool is registered and executes correctly
@@ -628,42 +636,47 @@ fn test_web_tool_registration() {
 async fn test_spawn_tool_integration() {
     use miniclaw::agent::tools::{ToolRegistry, spawn::SpawnTool};
     use tempfile::TempDir;
-    
+
     let temp_dir = TempDir::new().unwrap();
     let registry = ToolRegistry::new();
-    
+
     // Register SpawnTool as done in oneshot.rs
     let spawn_tool = SpawnTool::new(temp_dir.path().to_path_buf(), false).unwrap();
     registry.register(Box::new(spawn_tool)).unwrap();
-    
+
     // Verify tool is registered
     assert!(registry.contains("spawn"));
     assert_eq!(registry.len(), 1);
-    
+
     // Verify it appears in listings
     let tools = registry.list_tools();
     assert_eq!(tools.len(), 1);
-    
+
     let (name, desc, _params) = &tools[0];
     assert_eq!(name, "spawn");
     assert!(desc.contains("background"));
     assert!(desc.contains("blacklist"));
-    
+
     // Execute spawn tool with a simple command
     let mut args = HashMap::new();
     args.insert("command".to_string(), json!("echo"));
     args.insert("args".to_string(), json!(["test"]));
-    
+
     let ctx = ToolExecutionContext::default();
     let result = registry.execute_tool("spawn", args, &ctx).await;
-    
+
     // Should succeed and return JSON with PID
     assert!(result.is_ok());
     let output = result.unwrap();
     let parsed: Value = serde_json::from_str(&output).unwrap();
     assert_eq!(parsed["success"], true);
     assert!(parsed["pid"].as_u64().unwrap() > 0);
-    assert!(parsed["message"].as_str().unwrap().contains("spawned successfully"));
+    assert!(
+        parsed["message"]
+            .as_str()
+            .unwrap()
+            .contains("spawned successfully")
+    );
 }
 
 /// Integration test: Verify SpawnTool blacklist enforcement through registry
@@ -671,21 +684,21 @@ async fn test_spawn_tool_integration() {
 async fn test_spawn_tool_blacklist_integration() {
     use miniclaw::agent::tools::{ToolRegistry, spawn::SpawnTool};
     use tempfile::TempDir;
-    
+
     let temp_dir = TempDir::new().unwrap();
     let registry = ToolRegistry::new();
-    
+
     let spawn_tool = SpawnTool::new(temp_dir.path().to_path_buf(), false).unwrap();
     registry.register(Box::new(spawn_tool)).unwrap();
-    
+
     // Try to execute blacklisted command
     let mut args = HashMap::new();
     args.insert("command".to_string(), json!("sudo"));
     args.insert("args".to_string(), json!(["whoami"]));
-    
+
     let ctx = ToolExecutionContext::default();
     let result = registry.execute_tool("spawn", args, &ctx).await;
-    
+
     // Should fail with permission denied
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -700,22 +713,22 @@ async fn test_spawn_tool_blacklist_integration() {
 /// Integration test: Memory tool basic functionality
 #[tokio::test]
 async fn test_memory_tool_basic_functionality() {
-    use tempfile::tempdir;
     use miniclaw::agent::tools::memory::MemoryTool;
-    
+    use tempfile::tempdir;
+
     let temp_dir = tempdir().unwrap();
     let workspace_path = temp_dir.path().to_path_buf();
-    
+
     let memory_tool = MemoryTool::new(workspace_path).unwrap();
-    
+
     // Test tool properties
     assert_eq!(memory_tool.name(), "write_memory");
     assert!(memory_tool.description().contains("memory"));
-    
+
     // Test parameters schema
     let params = memory_tool.parameters();
     assert_eq!(params.get("type").unwrap(), "object");
-    
+
     let properties = params.get("properties").unwrap();
     assert!(properties.get("content").is_some());
     assert!(properties.get("type").is_some());
@@ -724,73 +737,87 @@ async fn test_memory_tool_basic_functionality() {
 /// Integration test: Memory tool long-term memory writing
 #[tokio::test]
 async fn test_memory_tool_long_term_memory() {
-    use tempfile::tempdir;
     use miniclaw::agent::tools::memory::MemoryTool;
-    
+    use tempfile::tempdir;
+
     let temp_dir = tempdir().unwrap();
     let workspace_path = temp_dir.path().to_path_buf();
-    
+
     let memory_tool = MemoryTool::new(workspace_path).unwrap();
-    
+
     let mut args = HashMap::new();
     args.insert("content".to_string(), json!("Test memory content"));
     args.insert("type".to_string(), json!("long_term"));
-    
+
     let ctx = ToolExecutionContext::default();
     let result = memory_tool.execute(args, &ctx).await;
-    
+
     assert!(result.is_ok());
     let response = result.unwrap();
     let response_value: Value = serde_json::from_str(&response).unwrap();
-    
+
     assert_eq!(response_value.get("success").unwrap(), true);
-    assert!(response_value.get("message").unwrap().as_str().unwrap().contains("Memory updated"));
+    assert!(
+        response_value
+            .get("message")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("Memory updated")
+    );
     assert!(response_value.get("file_path").is_some());
 }
 
 /// Integration test: Memory tool daily notes
 #[tokio::test]
 async fn test_memory_tool_daily_notes() {
-    use tempfile::tempdir;
     use miniclaw::agent::tools::memory::MemoryTool;
-    
+    use tempfile::tempdir;
+
     let temp_dir = tempdir().unwrap();
     let workspace_path = temp_dir.path().to_path_buf();
-    
+
     let memory_tool = MemoryTool::new(workspace_path).unwrap();
-    
+
     let mut args = HashMap::new();
     args.insert("content".to_string(), json!("Test daily note"));
     args.insert("type".to_string(), json!("daily"));
-    
+
     let ctx = ToolExecutionContext::default();
     let result = memory_tool.execute(args, &ctx).await;
-    
+
     assert!(result.is_ok());
     let response = result.unwrap();
     let response_value: Value = serde_json::from_str(&response).unwrap();
-    
+
     assert_eq!(response_value.get("success").unwrap(), true);
-    assert!(response_value.get("message").unwrap().as_str().unwrap().contains("Daily note created"));
+    assert!(
+        response_value
+            .get("message")
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .contains("Daily note created")
+    );
     assert!(response_value.get("file_path").is_some());
 }
 
 /// Integration test: Memory tool error handling
 #[tokio::test]
 async fn test_memory_tool_error_handling() {
-    use tempfile::tempdir;
     use miniclaw::agent::tools::memory::MemoryTool;
-    
+    use tempfile::tempdir;
+
     let temp_dir = tempdir().unwrap();
     let workspace_path = temp_dir.path().to_path_buf();
-    
+
     let memory_tool = MemoryTool::new(workspace_path).unwrap();
-    
+
     // Test missing content parameter
     let args = HashMap::new();
     let ctx = ToolExecutionContext::default();
     let result = memory_tool.execute(args, &ctx).await;
-    
+
     assert!(result.is_err());
     match result.unwrap_err() {
         ToolError::InvalidArguments { tool, message } => {
@@ -799,14 +826,14 @@ async fn test_memory_tool_error_handling() {
         }
         _ => panic!("Expected InvalidArguments error"),
     }
-    
+
     // Test invalid memory type
     let mut args = HashMap::new();
     args.insert("content".to_string(), json!("Test content"));
     args.insert("type".to_string(), json!("invalid_type"));
-    
+
     let result = memory_tool.execute(args, &ctx).await;
-    
+
     assert!(result.is_err());
     match result.unwrap_err() {
         ToolError::InvalidArguments { tool, message } => {
@@ -820,20 +847,20 @@ async fn test_memory_tool_error_handling() {
 /// Integration test: Memory tool empty content validation
 #[tokio::test]
 async fn test_memory_tool_empty_content() {
-    use tempfile::tempdir;
     use miniclaw::agent::tools::memory::MemoryTool;
-    
+    use tempfile::tempdir;
+
     let temp_dir = tempdir().unwrap();
     let workspace_path = temp_dir.path().to_path_buf();
-    
+
     let memory_tool = MemoryTool::new(workspace_path).unwrap();
-    
+
     let mut args = HashMap::new();
     args.insert("content".to_string(), json!(""));
-    
+
     let ctx = ToolExecutionContext::default();
     let result = memory_tool.execute(args, &ctx).await;
-    
+
     assert!(result.is_err());
     match result.unwrap_err() {
         ToolError::InvalidArguments { tool, message } => {
@@ -843,6 +870,3 @@ async fn test_memory_tool_empty_content() {
         _ => panic!("Expected InvalidArguments error"),
     }
 }
-
-
-

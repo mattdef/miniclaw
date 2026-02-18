@@ -56,7 +56,7 @@ impl CircuitBreaker {
     /// Check if a call should be allowed
     pub async fn can_call(&self) -> bool {
         let state = *self.state.read().await;
-        
+
         match state {
             CircuitState::Closed => true,
             CircuitState::Open => {
@@ -84,7 +84,7 @@ impl CircuitBreaker {
     /// Record a successful call
     pub async fn record_success(&self) {
         let state = *self.state.read().await;
-        
+
         match state {
             CircuitState::HalfOpen => {
                 // Successful test call - close the circuit
@@ -111,9 +111,9 @@ impl CircuitBreaker {
     pub async fn record_failure(&self) {
         let mut count = self.failure_count.write().await;
         *count += 1;
-        
+
         let state = *self.state.read().await;
-        
+
         match state {
             CircuitState::Closed => {
                 if *count >= self.failure_threshold {
@@ -162,16 +162,16 @@ mod tests {
     #[tokio::test]
     async fn test_circuit_breaker_opens_after_failures() {
         let cb = CircuitBreaker::new("test_service", 3, Duration::from_millis(100));
-        
+
         // Initially closed
         assert_eq!(cb.state().await, CircuitState::Closed);
         assert!(cb.can_call().await);
-        
+
         // Record failures
         cb.record_failure().await;
         cb.record_failure().await;
         assert_eq!(cb.state().await, CircuitState::Closed);
-        
+
         cb.record_failure().await;
         // Should be open now
         assert_eq!(cb.state().await, CircuitState::Open);
@@ -181,15 +181,15 @@ mod tests {
     #[tokio::test]
     async fn test_circuit_breaker_half_open_after_timeout() {
         let cb = CircuitBreaker::new("test_service", 2, Duration::from_millis(50));
-        
+
         // Open the circuit
         cb.record_failure().await;
         cb.record_failure().await;
         assert_eq!(cb.state().await, CircuitState::Open);
-        
+
         // Wait for timeout
         sleep(Duration::from_millis(60)).await;
-        
+
         // Should allow a test call (half-open)
         assert!(cb.can_call().await);
         assert_eq!(cb.state().await, CircuitState::HalfOpen);
@@ -198,16 +198,16 @@ mod tests {
     #[tokio::test]
     async fn test_circuit_breaker_closes_after_success() {
         let cb = CircuitBreaker::new("test_service", 2, Duration::from_millis(50));
-        
+
         // Open the circuit
         cb.record_failure().await;
         cb.record_failure().await;
         assert_eq!(cb.state().await, CircuitState::Open);
-        
+
         // Wait and transition to half-open
         sleep(Duration::from_millis(60)).await;
         assert!(cb.can_call().await);
-        
+
         // Record success - should close
         cb.record_success().await;
         assert_eq!(cb.state().await, CircuitState::Closed);
@@ -217,15 +217,15 @@ mod tests {
     #[tokio::test]
     async fn test_circuit_breaker_reopens_on_half_open_failure() {
         let cb = CircuitBreaker::new("test_service", 2, Duration::from_millis(50));
-        
+
         // Open the circuit
         cb.record_failure().await;
         cb.record_failure().await;
-        
+
         // Wait and transition to half-open
         sleep(Duration::from_millis(60)).await;
         assert!(cb.can_call().await);
-        
+
         // Record another failure - should reopen
         cb.record_failure().await;
         assert_eq!(cb.state().await, CircuitState::Open);

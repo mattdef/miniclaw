@@ -1,4 +1,4 @@
-use crate::config::{save_config, Config};
+use crate::config::{Config, save_config};
 use crate::workspace;
 use anyhow::{Context, Result};
 use inquire::Confirm;
@@ -117,7 +117,8 @@ fn collect_user_configuration(skip_prompts: bool, verbose: bool) -> Result<Confi
     println!();
     println!("Let's configure miniclaw!");
 
-    config.api_key = prompt_api_key(verbose)?;
+    // Prompt for provider selection first
+    config.provider_config = prompt_provider_selection(verbose)?;
 
     config.telegram_token = prompt_telegram_token(verbose)?;
 
@@ -140,10 +141,11 @@ fn confirm_configuration(config: &Config) -> Result<bool> {
     println!("Please review your configuration:");
     println!();
 
-    if let Some(api_key) = &config.api_key {
-        println!("  API Key: {}", mask_secret(api_key));
+    if let Some(provider_config) = &config.provider_config {
+        println!("  Provider: {}", provider_config.provider_type());
+        println!("  Model: {}", provider_config.default_model());
     } else {
-        println!("  API Key: (not set)");
+        println!("  Provider: (not set)");
     }
 
     if let Some(token) = &config.telegram_token {
@@ -168,38 +170,129 @@ fn confirm_configuration(config: &Config) -> Result<bool> {
     Ok(confirmed)
 }
 
-fn prompt_api_key(verbose: bool) -> Result<Option<String>> {
-    println!();
-    println!("OpenRouter API Configuration");
-    println!("To use LLM features, you need an OpenRouter API key.");
-    println!("Get one for free at: https://openrouter.ai/settings/keys");
-    println!("Format: The key should start with 'sk-or-'");
+fn prompt_provider_selection(verbose: bool) -> Result<Option<crate::providers::ProviderConfig>> {
+    use crate::providers::{
+        KimiConfig, OllamaConfig, OpenAiConfig, OpenRouterConfig, ProviderConfig,
+    };
+    use inquire::Select;
 
-    let api_key = Text::new("Enter your OpenRouter API key (or press Enter to skip):")
-        .with_validator(|input: &str| {
-            if input.is_empty() || input.starts_with("sk-or-") {
-                Ok(inquire::validator::Validation::Valid)
-            } else {
-                Ok(inquire::validator::Validation::Invalid(
-                    "API key must start with 'sk-or-' or be empty to skip".into(),
-                ))
-            }
-        })
-        .with_help_message("Press Enter without typing to skip this step")
+    println!();
+    println!("LLM Provider Selection");
+    println!("Choose which LLM provider you want to use:");
+
+    let options = vec![
+        "OpenRouter (recommended - access to multiple models)",
+        "OpenAI (native OpenAI API)",
+        "Kimi (Moonshot AI)",
+        "Ollama (local models - no API key needed)",
+    ];
+
+    let selection = Select::new("Select provider:", options)
+        .with_help_message("Use arrow keys to navigate, Enter to select")
         .prompt()?;
 
-    if api_key.is_empty() {
-        if verbose {
-            tracing::debug!("User skipped API key configuration");
+    match selection {
+        "OpenRouter (recommended - access to multiple models)" => {
+            println!("\nOpenRouter API Configuration");
+            println!("Get one for free at: https://openrouter.ai/settings/keys");
+            println!("Format: The key should start with 'sk-or-'");
+
+            let api_key = Text::new("Enter your OpenRouter API key (or press Enter to skip):")
+                .with_validator(|input: &str| {
+                    if input.is_empty() || input.starts_with("sk-or-") {
+                        Ok(inquire::validator::Validation::Valid)
+                    } else {
+                        Ok(inquire::validator::Validation::Invalid(
+                            "API key must start with 'sk-or-' or be empty to skip".into(),
+                        ))
+                    }
+                })
+                .with_help_message("Press Enter without typing to skip this step")
+                .prompt()?;
+
+            if api_key.is_empty() {
+                if verbose {
+                    tracing::debug!("User skipped OpenRouter API key configuration");
+                }
+                return Ok(None);
+            }
+
+            let provider_config = ProviderConfig::OpenRouter(OpenRouterConfig::new(&api_key));
+            Ok(Some(provider_config))
         }
-        return Ok(None);
-    }
+        "OpenAI (native OpenAI API)" => {
+            println!("\nOpenAI API Configuration");
+            println!("Get your API key at: https://platform.openai.com/api-keys");
+            println!("Format: The key should start with 'sk-'");
 
-    if verbose {
-        tracing::debug!(masked = true, "API key configured");
-    }
+            let api_key = Text::new("Enter your OpenAI API key (or press Enter to skip):")
+                .with_validator(|input: &str| {
+                    if input.is_empty() || input.starts_with("sk-") {
+                        Ok(inquire::validator::Validation::Valid)
+                    } else {
+                        Ok(inquire::validator::Validation::Invalid(
+                            "API key must start with 'sk-' or be empty to skip".into(),
+                        ))
+                    }
+                })
+                .with_help_message("Press Enter without typing to skip this step")
+                .prompt()?;
 
-    Ok(Some(api_key))
+            if api_key.is_empty() {
+                if verbose {
+                    tracing::debug!("User skipped OpenAI API key configuration");
+                }
+                return Ok(None);
+            }
+
+            let provider_config = ProviderConfig::OpenAi(OpenAiConfig::new(&api_key));
+            Ok(Some(provider_config))
+        }
+        "Kimi (Moonshot AI)" => {
+            println!("\nKimi (Moonshot AI) API Configuration");
+            println!("Get your API key at: https://platform.moonshot.cn");
+            println!("Format: The key should start with 'sk-kimi-'");
+
+            let api_key = Text::new("Enter your Kimi API key (or press Enter to skip):")
+                .with_validator(|input: &str| {
+                    if input.is_empty() || input.starts_with("sk-kimi-") {
+                        Ok(inquire::validator::Validation::Valid)
+                    } else {
+                        Ok(inquire::validator::Validation::Invalid(
+                            "API key must start with 'sk-kimi-' or be empty to skip".into(),
+                        ))
+                    }
+                })
+                .with_help_message("Press Enter without typing to skip this step")
+                .prompt()?;
+
+            if api_key.is_empty() {
+                if verbose {
+                    tracing::debug!("User skipped Kimi API key configuration");
+                }
+                return Ok(None);
+            }
+
+            let provider_config = ProviderConfig::Kimi(KimiConfig::new(&api_key));
+            Ok(Some(provider_config))
+        }
+        "Ollama (local models - no API key needed)" => {
+            println!("\nOllama Configuration");
+            println!("Using local Ollama instance at http://localhost:11434");
+            println!("Make sure Ollama is running locally.");
+
+            let provider_config = ProviderConfig::Ollama(OllamaConfig::new());
+            Ok(Some(provider_config))
+        }
+        _ => Ok(None),
+    }
+}
+
+#[allow(dead_code)]
+fn prompt_api_key(_verbose: bool) -> Result<Option<String>> {
+    // This function is now replaced by prompt_provider_selection
+    // Keeping for backward compatibility but it's no longer used
+    Ok(None)
 }
 
 fn prompt_telegram_token(verbose: bool) -> Result<Option<String>> {
@@ -298,7 +391,10 @@ fn prompt_telegram_whitelist(verbose: bool) -> Result<Vec<i64>> {
 
 fn save_configuration(base_path: &Path, config: &Config, verbose: bool) -> Result<()> {
     // Skip if no configuration to save (user cancelled)
-    if config.api_key.is_none() && config.telegram_token.is_none() && config.allow_from.is_empty() {
+    if config.provider_config.is_none()
+        && config.telegram_token.is_none()
+        && config.allow_from.is_empty()
+    {
         if verbose {
             tracing::debug!("Skipping save - empty configuration (user cancelled)");
         }
@@ -316,10 +412,11 @@ fn save_configuration(base_path: &Path, config: &Config, verbose: bool) -> Resul
     if verbose {
         println!("Configuration saved to: {}", config_path.display());
 
-        // Show masked values in verbose mode (AC 5)
+        // Show values in verbose mode
         println!("Saved values:");
-        if let Some(api_key) = &config.api_key {
-            println!("  API Key: {}", mask_secret(api_key));
+        if let Some(provider_config) = &config.provider_config {
+            println!("  Provider: {}", provider_config.provider_type());
+            println!("  Model: {}", provider_config.default_model());
         }
         if let Some(token) = &config.telegram_token {
             println!("  Telegram Token: {}", mask_secret(token));
@@ -337,10 +434,11 @@ fn display_completion_summary(config: &Config, verbose: bool) {
     println!();
     println!("Configuration Complete!");
 
-    if let Some(api_key) = &config.api_key {
-        println!("API Key: {}", mask_secret(api_key));
+    if let Some(provider_config) = &config.provider_config {
+        println!("Provider: {}", provider_config.provider_type());
+        println!("Model: {}", provider_config.default_model());
     } else {
-        println!("API Key: (not set)");
+        println!("Provider: (not set)");
     }
 
     if let Some(token) = &config.telegram_token {
@@ -453,7 +551,7 @@ mod tests {
         let result = collect_user_configuration(true, false);
         assert!(result.is_ok());
         let config = result.unwrap();
-        assert!(config.api_key.is_none());
+        assert!(config.provider_config.is_none());
         assert!(config.telegram_token.is_none());
         assert!(config.allow_from.is_empty()); // Secure by default
     }

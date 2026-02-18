@@ -18,33 +18,33 @@ fn validate_json_schema(schema: &Value) -> Result<(), String> {
     if !schema.is_object() {
         return Err("Schema must be an object".to_string());
     }
-    
+
     let obj = schema.as_object().unwrap();
-    
+
     // Check for required 'type' field
     if !obj.contains_key("type") {
         return Err("Schema must have a 'type' field".to_string());
     }
-    
+
     let schema_type = obj.get("type").and_then(|v| v.as_str());
     if schema_type != Some("object") {
         return Err("Schema type must be 'object' for tool parameters".to_string());
     }
-    
+
     // If properties exist, validate it's an object
     if let Some(props) = obj.get("properties") {
         if !props.is_object() {
             return Err("Schema 'properties' must be an object".to_string());
         }
     }
-    
+
     // If required exists, validate it's an array
     if let Some(required) = obj.get("required") {
         if !required.is_array() {
             return Err("Schema 'required' must be an array".to_string());
         }
     }
-    
+
     Ok(())
 }
 
@@ -61,9 +61,9 @@ pub fn validate_args_against_schema(
         tool: tool_name.to_string(),
         message: format!("Invalid tool schema: {}", e),
     })?;
-    
+
     let schema_obj = schema.as_object().unwrap();
-    
+
     // Check required fields
     if let Some(required) = schema_obj.get("required") {
         if let Some(required_array) = required.as_array() {
@@ -79,7 +79,7 @@ pub fn validate_args_against_schema(
             }
         }
     }
-    
+
     Ok(())
 }
 
@@ -136,7 +136,7 @@ impl ToolError {
             ToolError::PermissionDenied { tool, .. } => tool.as_str(),
             ToolError::Timeout { tool, .. } => tool.as_str(),
         };
-        
+
         if name.trim().is_empty() {
             "<unnamed>"
         } else {
@@ -251,9 +251,9 @@ pub trait Tool: Send + Sync {
     ///
     /// The schema describes the expected parameters and their types,
     /// which the LLM uses to generate proper tool calls.
-    /// 
+    ///
     /// # Schema Validation
-    /// 
+    ///
     /// The returned schema MUST be a valid JSON Schema with:
     /// - `type: "object"` at the root level
     /// - `properties` object defining parameter types

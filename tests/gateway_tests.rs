@@ -38,12 +38,13 @@ fn test_gateway_pid_file_argument_parsing() {
 
     assert!(matches!(
         cli.command,
-        Some(Commands::Gateway {
-            pid_file: Some(_)
-        })
+        Some(Commands::Gateway { pid_file: Some(_) })
     ));
 
-    if let Some(Commands::Gateway { pid_file: Some(path) }) = cli.command {
+    if let Some(Commands::Gateway {
+        pid_file: Some(path),
+    }) = cli.command
+    {
         assert_eq!(path.to_str().unwrap(), "/run/miniclaw.pid");
     }
 }
@@ -105,6 +106,8 @@ async fn test_gateway_initialization_with_valid_config() {
         telegram_token: None,
         allow_from: vec![],
         spawn_log_output: false,
+        provider_type: None,
+        provider_config: None,
     };
 
     // Config should be valid
@@ -115,7 +118,7 @@ async fn test_gateway_initialization_with_valid_config() {
 /// Test session persistence during graceful shutdown
 #[tokio::test]
 async fn test_graceful_shutdown_saves_sessions() {
-    use miniclaw::session::{SessionManager, Message};
+    use miniclaw::session::{Message, SessionManager};
 
     let temp_dir = TempDir::new().unwrap();
     let sessions_dir = temp_dir.path().join("sessions");
@@ -156,13 +159,16 @@ async fn test_graceful_shutdown_saves_sessions() {
         .await
         .unwrap();
     assert_eq!(loaded_session.messages.len(), 1);
-    assert_eq!(loaded_session.messages[0].content, "Test message for shutdown");
+    assert_eq!(
+        loaded_session.messages[0].content,
+        "Test message for shutdown"
+    );
 }
 
 /// Test concurrent session handling
 #[tokio::test]
 async fn test_concurrent_session_handling() {
-    use miniclaw::session::{SessionManager, Message};
+    use miniclaw::session::{Message, SessionManager};
 
     let temp_dir = TempDir::new().unwrap();
     let sessions_dir = temp_dir.path().join("sessions");
@@ -184,10 +190,8 @@ async fn test_concurrent_session_handling() {
 
             // Add multiple messages
             for j in 0..3 {
-                let message = Message::new(
-                    "user".to_string(),
-                    format!("Message {} from chat {}", j, i),
-                );
+                let message =
+                    Message::new("user".to_string(), format!("Message {} from chat {}", j, i));
                 sm.add_message(&session.session_id, message).await.unwrap();
             }
 
@@ -248,7 +252,7 @@ async fn test_persistence_error_recovery() {
 #[cfg(unix)]
 #[tokio::test]
 async fn test_signal_handlers_setup() {
-    use tokio::signal::unix::{signal, SignalKind};
+    use tokio::signal::unix::{SignalKind, signal};
 
     // Verify we can create signal handlers for SIGTERM and SIGINT
     let sigterm = signal(SignalKind::terminate());
@@ -264,10 +268,16 @@ async fn test_signal_handlers_setup() {
 #[test]
 fn test_exit_codes() {
     // Exit code 0: Success
-    assert_eq!(std::process::ExitCode::SUCCESS, std::process::ExitCode::from(0));
+    assert_eq!(
+        std::process::ExitCode::SUCCESS,
+        std::process::ExitCode::from(0)
+    );
 
     // Exit code 1: General error
-    assert_eq!(std::process::ExitCode::from(1), std::process::ExitCode::from(1));
+    assert_eq!(
+        std::process::ExitCode::from(1),
+        std::process::ExitCode::from(1)
+    );
 
     // Exit code 130: SIGINT (128 + 2)
     let sigint_code = 128 + 2;
@@ -276,7 +286,7 @@ fn test_exit_codes() {
     // Exit code 143: SIGTERM (128 + 15)
     let sigterm_code = 128 + 15;
     assert_eq!(sigterm_code, 143, "SIGTERM exit code should be 143");
-    
+
     // These exit codes are handled by the shell/runtime when signals are received,
     // but we validate the constants are correct
 }
@@ -284,7 +294,7 @@ fn test_exit_codes() {
 /// Test that auto-persistence runs at correct intervals
 #[tokio::test]
 async fn test_auto_persistence_interval() {
-    use miniclaw::session::{SessionManager, Message};
+    use miniclaw::session::{Message, SessionManager};
 
     let temp_dir = TempDir::new().unwrap();
     let sessions_dir = temp_dir.path().join("sessions");
@@ -363,7 +373,7 @@ async fn test_gateway_logging_events() {
 /// Test concurrent access to session manager (RwLock behavior)
 #[tokio::test]
 async fn test_concurrent_session_access() {
-    use miniclaw::session::{SessionManager, Message};
+    use miniclaw::session::{Message, SessionManager};
 
     let temp_dir = TempDir::new().unwrap();
     let sessions_dir = temp_dir.path().join("sessions");
@@ -413,7 +423,7 @@ async fn test_concurrent_session_access() {
 /// Test that sessions are isolated by chat_id
 #[tokio::test]
 async fn test_session_isolation() {
-    use miniclaw::session::{SessionManager, Message};
+    use miniclaw::session::{Message, SessionManager};
 
     let temp_dir = TempDir::new().unwrap();
     let sessions_dir = temp_dir.path().join("sessions");
@@ -446,8 +456,14 @@ async fn test_session_isolation() {
         .unwrap();
 
     // Verify isolation
-    let session1_loaded = session_manager.get_session(&session1.session_id).await.unwrap();
-    let session2_loaded = session_manager.get_session(&session2.session_id).await.unwrap();
+    let session1_loaded = session_manager
+        .get_session(&session1.session_id)
+        .await
+        .unwrap();
+    let session2_loaded = session_manager
+        .get_session(&session2.session_id)
+        .await
+        .unwrap();
 
     assert_eq!(session1_loaded.messages.len(), 1);
     assert_eq!(session2_loaded.messages.len(), 1);
@@ -461,10 +477,10 @@ fn test_agent_loop_integration() {
     // Verify that AgentLoop type is available and can be imported
     // This is a compile-time check - if this compiles, AgentLoop exists
     use miniclaw::agent::AgentLoop;
-    
+
     // Type exists (checked at compile time)
     let _type_check: Option<AgentLoop> = None;
-    
+
     // This test ensures gateway.rs imports and uses AgentLoop
     // The actual runtime test would require a full gateway startup
 }

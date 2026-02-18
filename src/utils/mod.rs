@@ -8,5 +8,5 @@ pub mod security;
 // Re-export commonly used items
 pub use circuit_breaker::{CircuitBreaker, CircuitState};
 pub use error::{ErrorSeverity, MiniClawError, Result};
-pub use paths::{canonicalize_base_dir, is_system_path, validate_path, PathValidationError};
-pub use security::{is_command_allowed, WhitelistChecker};
+pub use paths::{PathValidationError, canonicalize_base_dir, is_system_path, validate_path};
+pub use security::{WhitelistChecker, is_command_allowed};
