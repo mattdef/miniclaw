@@ -420,10 +420,12 @@ mod tests {
 
         let telegram_err = MiniClawError::external_service("telegram", "timeout");
         assert!(telegram_err.suggestion().is_some());
-        assert!(telegram_err
-            .suggestion()
-            .unwrap()
-            .contains("TELEGRAM_BOT_TOKEN"));
+        assert!(
+            telegram_err
+                .suggestion()
+                .unwrap()
+                .contains("TELEGRAM_BOT_TOKEN")
+        );
 
         let llm_err = MiniClawError::external_service("llm", "unauthorized");
         assert!(llm_err.suggestion().is_some());

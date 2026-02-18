@@ -12,7 +12,6 @@ use crate::providers::LlmProvider;
 use crate::session::SessionManager;
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
 /// Runs the gateway daemon with auto-persistence and graceful shutdown.
@@ -26,7 +25,6 @@ use tracing::{debug, error, info, warn};
 /// 6. Handles SIGTERM/SIGINT for graceful shutdown
 /// 7. Flushes all sessions to disk before exiting
 pub async fn run_gateway(config: &Config) -> Result<()> {
-
     info!(
         version = env!("CARGO_PKG_VERSION"),
         "Starting miniclaw gateway daemon"
@@ -148,27 +146,18 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
     );
     info!("Context builder initialized");
 
-    // Create a new SessionManager wrapped in RwLock for AgentLoop
-    // Note: This is separate from the persistence SessionManager above
-    // In a future refactor, we should unify these
-    let agent_session_manager = Arc::new(RwLock::new(SessionManager::new(sessions_dir.clone())));
-    agent_session_manager
-        .write()
-        .await
-        .initialize()
-        .await
-        .context("Failed to initialize agent SessionManager")?;
-
     // Initialize AgentLoop for message processing with inbound receiver
-    let agent_loop = AgentLoop::with_model_and_receiver(
+    // Share the same session_manager instance (already Arc<SessionManager>)
+    let agent_loop = AgentLoop::builder(
         Arc::clone(&chat_hub),
         llm_provider,
         context_builder,
         tool_registry,
-        agent_session_manager,
-        model.clone(),
-        agent_rx,
-    );
+        Arc::clone(&session_manager),
+    )
+    .with_model(model.clone())
+    .with_inbound_receiver(agent_rx)
+    .build();
     info!("AgentLoop initialized with inbound receiver");
 
     // Spawn AgentLoop processing task
@@ -189,25 +178,31 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
     // Initialize Telegram channel if configured
     let telegram_channel = if let Some(token) = &config.telegram_token {
         match TelegramChannel::new(token.clone(), config.allow_from.clone()) {
-            Ok(channel) => {
-                match channel.start(Arc::clone(&chat_hub)).await {
-                    Ok(()) => {
-                        info!("Telegram channel initialized successfully");
-                        Some(channel)
-                    }
-                    Err(e) => {
-                        error!("Failed to start Telegram channel: {}. Gateway will continue without Telegram support.", e);
-                        None
-                    }
+            Ok(channel) => match channel.start(Arc::clone(&chat_hub)).await {
+                Ok(()) => {
+                    info!("Telegram channel initialized successfully");
+                    Some(channel)
                 }
-            }
+                Err(e) => {
+                    error!(
+                        "Failed to start Telegram channel: {}. Gateway will continue without Telegram support.",
+                        e
+                    );
+                    None
+                }
+            },
             Err(e) => {
-                error!("Invalid Telegram token: {}. Check @BotFather (https://t.me/BotFather) for a valid token. Gateway will continue without Telegram support.", e);
+                error!(
+                    "Invalid Telegram token: {}. Check @BotFather (https://t.me/BotFather) for a valid token. Gateway will continue without Telegram support.",
+                    e
+                );
                 None
             }
         }
     } else {
-        warn!("No Telegram token configured. Set TELEGRAM_BOT_TOKEN environment variable or add telegram_token to config.json to enable Telegram support.");
+        warn!(
+            "No Telegram token configured. Set TELEGRAM_BOT_TOKEN environment variable or add telegram_token to config.json to enable Telegram support."
+        );
         None
     };
 
@@ -224,11 +219,15 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
         let current_pid = match get_current_pid() {
             Ok(pid) => pid,
             Err(e) => {
-                error!("Failed to get current PID for memory monitoring: {}. Memory monitoring disabled.", e);
+                error!(
+                    "Failed to get current PID for memory monitoring: {}. Memory monitoring disabled.",
+                    e
+                );
                 return;
             }
         };
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(MEMORY_CHECK_INTERVAL_SECS));
+        let mut interval =
+            tokio::time::interval(tokio::time::Duration::from_secs(MEMORY_CHECK_INTERVAL_SECS));
 
         loop {
             tokio::select! {
@@ -375,211 +374,9 @@ fn create_provider(config: &Config) -> Result<Arc<dyn LlmProvider>> {
         .context("No LLM provider available. Please configure a provider in ~/.miniclaw/config.json or ensure Ollama is running locally")
 }
 
-/// Triggered persistence for testing purposes.
-#[cfg(test)]
-pub async fn trigger_persistence(session_manager: &SessionManager) -> Result<()> {
-    session_manager
-        .save_all_sessions()
-        .await
-        .map_err(|e| anyhow::anyhow!("Persistence error: {}", e))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Duration;
-    use tempfile::TempDir;
-
-    #[tokio::test]
-    async fn test_session_manager_initialization() {
-        let temp_dir = TempDir::new().unwrap();
-        let sessions_dir = temp_dir.path().join("sessions");
-
-        let session_manager = SessionManager::new(sessions_dir);
-        session_manager.initialize().await.unwrap();
-
-        assert_eq!(session_manager.session_count().await, 0);
-    }
-
-    #[tokio::test]
-    async fn test_auto_persistence_spawning() {
-        let temp_dir = TempDir::new().unwrap();
-        let sessions_dir = temp_dir.path().join("sessions");
-
-        let session_manager = SessionManager::new(sessions_dir);
-        session_manager.initialize().await.unwrap();
-
-        // Should not panic when starting auto-persistence
-        let (_handle, _shutdown) = session_manager.start_auto_persistence();
-
-        // Give it a moment to start
-        tokio::time::sleep(Duration::from_millis(100)).await;
-
-        // The task should be running (we can't easily verify this, but at least it doesn't crash)
-    }
-
-    #[tokio::test]
-    async fn test_auto_persistence_saves_sessions() {
-        let temp_dir = TempDir::new().unwrap();
-        let sessions_dir = temp_dir.path().join("sessions");
-
-        // Create session manager and add a session
-        let session_manager = SessionManager::new(sessions_dir.clone());
-        session_manager.initialize().await.unwrap();
-
-        let session = session_manager
-            .get_or_create_session("telegram", "123456789")
-            .await
-            .unwrap();
-
-        // Add a message to the session
-        use crate::session::Message;
-        let message = Message::new("user".to_string(), "Test message".to_string());
-        session_manager
-            .add_message(&session.session_id, message)
-            .await
-            .unwrap();
-
-        // Manually trigger persistence (simulating the auto-persistence task)
-        session_manager.save_all_sessions().await.unwrap();
-
-        // Verify the session file was created
-        let session_file = sessions_dir.join("telegram_123456789.json");
-        assert!(
-            session_file.exists(),
-            "Session file should exist after persistence"
-        );
-
-        // Verify we can load it back
-        let loaded_session = session_manager
-            .get_or_create_session("telegram", "123456789")
-            .await
-            .unwrap();
-        assert_eq!(loaded_session.messages.len(), 1);
-        assert_eq!(loaded_session.messages[0].content, "Test message");
-    }
-
-    #[tokio::test]
-    async fn test_session_file_naming_format() {
-        let temp_dir = TempDir::new().unwrap();
-        let sessions_dir = temp_dir.path().join("sessions");
-
-        let session_manager = SessionManager::new(sessions_dir.clone());
-        session_manager.initialize().await.unwrap();
-
-        // Create sessions with different channel/chat_id combinations
-        session_manager
-            .get_or_create_session("telegram", "111")
-            .await
-            .unwrap();
-        session_manager
-            .get_or_create_session("cli", "222")
-            .await
-            .unwrap();
-        session_manager
-            .get_or_create_session("discord", "333")
-            .await
-            .unwrap();
-
-        // Save all sessions
-        session_manager.save_all_sessions().await.unwrap();
-
-        // Verify correct file naming
-        assert!(sessions_dir.join("telegram_111.json").exists());
-        assert!(sessions_dir.join("cli_222.json").exists());
-        assert!(sessions_dir.join("discord_333.json").exists());
-    }
-
-    #[tokio::test]
-    async fn test_persistence_continues_after_failure() {
-        let temp_dir = TempDir::new().unwrap();
-        let sessions_dir = temp_dir.path().join("sessions");
-
-        let session_manager = SessionManager::new(sessions_dir);
-        session_manager.initialize().await.unwrap();
-
-        // Create a session
-        session_manager
-            .get_or_create_session("telegram", "123")
-            .await
-            .unwrap();
-
-        // Start auto-persistence
-        let (_handle, shutdown) = session_manager.start_auto_persistence();
-
-        // The persistence task should continue even if individual saves fail
-        // We can't easily simulate disk full, but we can verify the task doesn't panic
-        tokio::time::sleep(Duration::from_millis(200)).await;
-
-        // Signal shutdown and verify clean exit
-        let _ = shutdown.send(()).await;
-
-        // If we get here without a panic, the persistence loop is working
-    }
-
-    #[tokio::test]
-    async fn test_graceful_shutdown_flushes_sessions() {
-        let temp_dir = TempDir::new().unwrap();
-        let sessions_dir = temp_dir.path().join("sessions");
-
-        let session_manager = SessionManager::new(sessions_dir.clone());
-        session_manager.initialize().await.unwrap();
-
-        // Create a session with data
-        let session = session_manager
-            .get_or_create_session("telegram", "123")
-            .await
-            .unwrap();
-
-        use crate::session::Message;
-        let message = Message::new("user".to_string(), "Shutdown test".to_string());
-        session_manager
-            .add_message(&session.session_id, message)
-            .await
-            .unwrap();
-
-        // Simulate graceful shutdown by saving all sessions
-        session_manager.save_all_sessions().await.unwrap();
-
-        // Verify session was flushed to disk
-        let session_file = sessions_dir.join("telegram_123.json");
-        assert!(
-            session_file.exists(),
-            "Session should be flushed during graceful shutdown"
-        );
-    }
-
-    #[tokio::test]
-    async fn test_lock_scope_during_persistence() {
-        let temp_dir = TempDir::new().unwrap();
-        let sessions_dir = temp_dir.path().join("sessions");
-
-        let session_manager = SessionManager::new(sessions_dir);
-        session_manager.initialize().await.unwrap();
-
-        // Create a session
-        let session = session_manager
-            .get_or_create_session("telegram", "123")
-            .await
-            .unwrap();
-
-        // Add multiple messages rapidly while persistence might be running
-        use crate::session::Message;
-        for i in 0..5 {
-            let message = Message::new("user".to_string(), format!("Message {}", i));
-            session_manager
-                .add_message(&session.session_id, message)
-                .await
-                .unwrap();
-        }
-
-        // Verify all messages were added (no deadlock or data corruption)
-        let updated_session = session_manager
-            .get_session(&session.session_id)
-            .await
-            .unwrap();
-        assert_eq!(updated_session.messages.len(), 5);
-    }
 
     #[tokio::test]
     async fn test_gateway_command_available() {

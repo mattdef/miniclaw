@@ -11,6 +11,7 @@ use miniclaw::agent::{ContextBuilder, ContextBuilderImpl, LlmRole};
 use miniclaw::chat::InboundMessage;
 use miniclaw::session::{Message, SessionManager};
 use std::sync::Arc;
+use std::time::Duration;
 
 #[tokio::test]
 async fn test_session_persistence_roundtrip() {
@@ -467,4 +468,166 @@ async fn test_session_updates_visible_to_context_builder() {
         history_count, 2,
         "Should have 2 history messages (user + assistant)"
     );
+}
+
+// ── Tests migrated from src/gateway.rs inline test block ─────────────────────
+
+#[tokio::test]
+async fn test_auto_persistence_saves_sessions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sessions_dir = temp_dir.path().join("sessions");
+
+    // Create session manager and add a session
+    let session_manager = SessionManager::new(sessions_dir.clone());
+    session_manager.initialize().await.unwrap();
+
+    let session = session_manager
+        .get_or_create_session("telegram", "123456789")
+        .await
+        .unwrap();
+
+    // Add a message to the session
+    let message = Message::new("user".to_string(), "Test message".to_string());
+    session_manager
+        .add_message(&session.session_id, message)
+        .await
+        .unwrap();
+
+    // Manually trigger persistence (simulating the auto-persistence task)
+    session_manager.save_all_sessions().await.unwrap();
+
+    // Verify the session file was created
+    let session_file = sessions_dir.join("telegram_123456789.json");
+    assert!(
+        session_file.exists(),
+        "Session file should exist after persistence"
+    );
+
+    // Verify we can load it back
+    let loaded_session = session_manager
+        .get_or_create_session("telegram", "123456789")
+        .await
+        .unwrap();
+    assert_eq!(loaded_session.messages.len(), 1);
+    assert_eq!(loaded_session.messages[0].content, "Test message");
+}
+
+#[tokio::test]
+async fn test_session_file_naming_format() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sessions_dir = temp_dir.path().join("sessions");
+
+    let session_manager = SessionManager::new(sessions_dir.clone());
+    session_manager.initialize().await.unwrap();
+
+    // Create sessions with different channel/chat_id combinations
+    session_manager
+        .get_or_create_session("telegram", "111")
+        .await
+        .unwrap();
+    session_manager
+        .get_or_create_session("cli", "222")
+        .await
+        .unwrap();
+    session_manager
+        .get_or_create_session("discord", "333")
+        .await
+        .unwrap();
+
+    // Save all sessions
+    session_manager.save_all_sessions().await.unwrap();
+
+    // Verify correct file naming
+    assert!(sessions_dir.join("telegram_111.json").exists());
+    assert!(sessions_dir.join("cli_222.json").exists());
+    assert!(sessions_dir.join("discord_333.json").exists());
+}
+
+#[tokio::test]
+async fn test_graceful_shutdown_flushes_sessions() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sessions_dir = temp_dir.path().join("sessions");
+
+    let session_manager = SessionManager::new(sessions_dir.clone());
+    session_manager.initialize().await.unwrap();
+
+    // Create a session with data
+    let session = session_manager
+        .get_or_create_session("telegram", "123")
+        .await
+        .unwrap();
+
+    let message = Message::new("user".to_string(), "Shutdown test".to_string());
+    session_manager
+        .add_message(&session.session_id, message)
+        .await
+        .unwrap();
+
+    // Simulate graceful shutdown by saving all sessions
+    session_manager.save_all_sessions().await.unwrap();
+
+    // Verify session was flushed to disk
+    let session_file = sessions_dir.join("telegram_123.json");
+    assert!(
+        session_file.exists(),
+        "Session should be flushed during graceful shutdown"
+    );
+}
+
+#[tokio::test]
+async fn test_lock_scope_during_persistence() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sessions_dir = temp_dir.path().join("sessions");
+
+    let session_manager = SessionManager::new(sessions_dir);
+    session_manager.initialize().await.unwrap();
+
+    // Create a session
+    let session = session_manager
+        .get_or_create_session("telegram", "123")
+        .await
+        .unwrap();
+
+    // Add multiple messages rapidly while persistence might be running
+    for i in 0..5 {
+        let message = Message::new("user".to_string(), format!("Message {}", i));
+        session_manager
+            .add_message(&session.session_id, message)
+            .await
+            .unwrap();
+    }
+
+    // Verify all messages were added (no deadlock or data corruption)
+    let updated_session = session_manager
+        .get_session(&session.session_id)
+        .await
+        .unwrap();
+    assert_eq!(updated_session.messages.len(), 5);
+}
+
+#[tokio::test]
+async fn test_persistence_continues_after_failure() {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let sessions_dir = temp_dir.path().join("sessions");
+
+    let session_manager = SessionManager::new(sessions_dir);
+    session_manager.initialize().await.unwrap();
+
+    // Create a session
+    session_manager
+        .get_or_create_session("telegram", "123")
+        .await
+        .unwrap();
+
+    // Start auto-persistence
+    let (_handle, shutdown) = session_manager.start_auto_persistence();
+
+    // The persistence task should continue even if individual saves fail
+    // We can't easily simulate disk full, but we can verify the task doesn't panic
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    // Signal shutdown and verify clean exit
+    let _ = shutdown.send(()).await;
+
+    // If we get here without a panic, the persistence loop is working
 }

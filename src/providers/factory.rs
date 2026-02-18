@@ -334,6 +334,48 @@ impl KimiConfig {
     }
 }
 
+/// Trait for provider configurations that require an API key.
+///
+/// Implemented by [`OpenRouterConfig`], [`OpenAiConfig`], and [`KimiConfig`].
+/// Not implemented for [`OllamaConfig`] (local provider, no key required).
+pub trait ApiKeyProviderConfig {
+    /// Returns the API key for this provider
+    fn api_key(&self) -> &str;
+
+    /// Sets the API key for this provider
+    fn set_api_key(&mut self, key: String);
+}
+
+impl ApiKeyProviderConfig for OpenRouterConfig {
+    fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
+    fn set_api_key(&mut self, key: String) {
+        self.api_key = key;
+    }
+}
+
+impl ApiKeyProviderConfig for OpenAiConfig {
+    fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
+    fn set_api_key(&mut self, key: String) {
+        self.api_key = key;
+    }
+}
+
+impl ApiKeyProviderConfig for KimiConfig {
+    fn api_key(&self) -> &str {
+        &self.api_key
+    }
+
+    fn set_api_key(&mut self, key: String) {
+        self.api_key = key;
+    }
+}
+
 /// Provider configuration variants
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -388,6 +430,18 @@ impl ProviderConfig {
             ProviderConfig::Ollama(config) => &config.default_model,
             #[cfg(test)]
             ProviderConfig::Mock => "mock-model",
+        }
+    }
+
+    /// Sets the default model for this provider configuration
+    pub fn set_default_model(&mut self, model: String) {
+        match self {
+            ProviderConfig::OpenRouter(config) => config.default_model = model,
+            ProviderConfig::OpenAi(config) => config.default_model = model,
+            ProviderConfig::Kimi(config) => config.default_model = model,
+            ProviderConfig::Ollama(config) => config.default_model = model,
+            #[cfg(test)]
+            ProviderConfig::Mock => {}
         }
     }
 

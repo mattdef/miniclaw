@@ -90,13 +90,16 @@ impl MemoryRanker {
     /// Score is the count of unique query tokens found in the content.
     ///
     /// # Arguments
-    /// * `content` - The memory content to score
-    /// * `query_tokens` - The tokenized query
+    /// * `content_lower` - The memory content, **already lowercased** (caller is responsible)
+    /// * `query_tokens` - The tokenized query (tokens should be lowercase)
     ///
     /// # Returns
     /// Relevance score (0 or higher)
-    pub fn calculate_score(content: &str, query_tokens: &[String]) -> usize {
-        let content_lower = content.to_lowercase();
+    ///
+    /// # Performance
+    /// Accepts pre-lowercased content to avoid allocating a new `String` on every call.
+    /// Callers should lowercase once per entry, not once per token.
+    pub fn calculate_score(content_lower: &str, query_tokens: &[String]) -> usize {
         query_tokens
             .iter()
             .filter(|token| content_lower.contains(token.as_str()))
@@ -152,7 +155,8 @@ impl MemoryRanker {
 
         for section in sections {
             for entry in section.entries {
-                let score = Self::calculate_score(&entry.content, query_tokens);
+                let content_lower = entry.content.to_lowercase();
+                let score = Self::calculate_score(&content_lower, query_tokens);
                 if score > 0 {
                     results.push(RankedMemory {
                         content: entry.content.clone(),
@@ -201,7 +205,8 @@ impl MemoryRanker {
 
         for section in sections {
             for entry in section.entries {
-                let score = Self::calculate_score(&entry.content, query_tokens);
+                let content_lower = entry.content.to_lowercase();
+                let score = Self::calculate_score(&content_lower, query_tokens);
                 if score > 0 {
                     results.push(RankedMemory {
                         content: entry.content.clone(),
@@ -337,7 +342,9 @@ mod tests {
     #[test]
     fn test_calculate_score_case_insensitive() {
         let tokens = vec!["hello".to_string()];
-        let score = MemoryRanker::calculate_score("HELLO World", &tokens);
+        // Caller must lowercase content before passing
+        let content_lower = "HELLO World".to_lowercase();
+        let score = MemoryRanker::calculate_score(&content_lower, &tokens);
         assert_eq!(score, 1);
     }
 

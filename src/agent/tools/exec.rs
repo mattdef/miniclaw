@@ -10,17 +10,11 @@ use std::time::Duration;
 use serde_json::Value;
 use tokio::process::Command;
 
+use crate::agent::tools::security;
 use crate::agent::tools::types::{Tool, ToolError, ToolExecutionContext, ToolResult};
-use crate::utils::paths::{PathValidationError, validate_path};
 
 /// Default timeout for command execution in seconds
 const DEFAULT_EXEC_TIMEOUT_SECS: u64 = 30;
-
-/// Blacklisted commands that cannot be executed for security reasons
-/// These commands are considered dangerous and are blocked to prevent system damage
-const EXEC_BLACKLIST: &[&str] = &[
-    "rm", "sudo", "dd", "mkfs", "shutdown", "reboot", "passwd", "visudo",
-];
 
 /// Tool for executing shell commands
 ///
@@ -66,7 +60,7 @@ impl ExecTool {
 
     /// Checks if a command is in the blacklist
     ///
-    /// Blacklist: rm, sudo, dd, mkfs, shutdown, reboot, passwd, visudo
+    /// Delegates to the shared security module's [`security::is_blacklisted`].
     ///
     /// # Arguments
     /// * `command` - The command to check
@@ -74,14 +68,7 @@ impl ExecTool {
     /// # Returns
     /// `true` if the command is blacklisted, `false` otherwise
     fn is_blacklisted(&self, command: &str) -> bool {
-        // Extract the base command name (last component of path)
-        let base_cmd = std::path::Path::new(command)
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or(command)
-            .to_lowercase();
-
-        EXEC_BLACKLIST.contains(&base_cmd.as_str())
+        security::is_blacklisted(command)
     }
 
     /// Validates a working directory path
@@ -93,34 +80,7 @@ impl ExecTool {
     /// * `Ok(PathBuf)` - The canonicalized, validated path
     /// * `Err(ToolError)` - If path is invalid or outside allowed scope
     async fn validate_cwd(&self, cwd: &str) -> ToolResult<PathBuf> {
-        validate_path(&self.base_dir, cwd)
-            .await
-            .map_err(|e| match e {
-                PathValidationError::OutsideBaseDirectory(path) => ToolError::PermissionDenied {
-                    tool: self.name().to_string(),
-                    message: format!(
-                        "Working directory '{}' is outside the allowed base directory",
-                        path
-                    ),
-                },
-                PathValidationError::SystemPathBlocked(path) => ToolError::PermissionDenied {
-                    tool: self.name().to_string(),
-                    message: format!("Access to system path '{}' is not allowed", path),
-                },
-                PathValidationError::CanonicalizationFailed { path, source } => {
-                    ToolError::ExecutionFailed {
-                        tool: self.name().to_string(),
-                        message: format!(
-                            "Failed to resolve working directory '{}': {}",
-                            path, source
-                        ),
-                    }
-                }
-                PathValidationError::InvalidBaseDirectory(msg) => ToolError::ExecutionFailed {
-                    tool: self.name().to_string(),
-                    message: format!("Base directory error: {}", msg),
-                },
-            })
+        security::validate_cwd(self.name(), &self.base_dir, cwd).await
     }
 
     /// Executes a command with the given arguments

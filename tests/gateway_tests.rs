@@ -108,6 +108,7 @@ async fn test_gateway_initialization_with_valid_config() {
         spawn_log_output: false,
         provider_type: None,
         provider_config: None,
+        default_channel: "cli".to_string(),
     };
 
     // Config should be valid
@@ -262,8 +263,6 @@ async fn test_signal_handlers_setup() {
     assert!(sigint.is_ok(), "Should be able to create SIGINT handler");
 }
 
-/// Test exit codes for different scenarios
-#[test]
 /// Test exit code constants are defined correctly for systemd/docker
 #[test]
 fn test_exit_codes() {
@@ -483,4 +482,79 @@ fn test_agent_loop_integration() {
 
     // This test ensures gateway.rs imports and uses AgentLoop
     // The actual runtime test would require a full gateway startup
+}
+
+// ── Signal handling and startup smoke tests (Task 32) ─────────────────────────
+
+/// Smoke test: verify the `gateway` binary subcommand exists and reports
+/// `--help` correctly (does not start the daemon).
+#[test]
+fn test_gateway_help_smoke() {
+    use assert_cmd::Command;
+
+    let output = Command::cargo_bin("miniclaw")
+        .unwrap()
+        .args(["gateway", "--help"])
+        .output()
+        .unwrap();
+
+    // --help always exits 0 for clap-based CLIs
+    assert!(
+        output.status.success(),
+        "gateway --help should exit with code 0"
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("gateway") || stdout.contains("Gateway"),
+        "gateway --help should mention 'gateway', got: {stdout}"
+    );
+}
+
+/// Verify that sessions are correctly flushed when `save_all_sessions` is
+/// called — this models what the gateway does on SIGTERM/SIGINT.
+#[tokio::test]
+async fn test_sessions_flushed_on_simulated_shutdown_signal() {
+    use miniclaw::session::{Message, SessionManager};
+
+    let temp_dir = TempDir::new().unwrap();
+    let sessions_dir = temp_dir.path().join("sessions");
+
+    let session_manager = std::sync::Arc::new(SessionManager::new(sessions_dir.clone()));
+    session_manager.initialize().await.unwrap();
+
+    // Populate a session
+    let session = session_manager
+        .get_or_create_session("telegram", "signal_test")
+        .await
+        .unwrap();
+
+    for i in 0..3 {
+        session_manager
+            .add_message(
+                &session.session_id,
+                Message::new("user".to_string(), format!("msg {}", i)),
+            )
+            .await
+            .unwrap();
+    }
+
+    // Simulate the shutdown flush (mirrors gateway graceful shutdown code)
+    session_manager.save_all_sessions().await.unwrap();
+
+    // Verify all messages were flushed to disk
+    let session_file = sessions_dir.join("telegram_signal_test.json");
+    assert!(
+        session_file.exists(),
+        "session file should exist after flush"
+    );
+
+    // Reload and confirm integrity
+    let manager2 = SessionManager::new(sessions_dir);
+    manager2.initialize().await.unwrap();
+    let reloaded = manager2.get_session(&session.session_id).await.unwrap();
+    assert_eq!(
+        reloaded.messages.len(),
+        3,
+        "all messages should survive a flush/reload cycle"
+    );
 }

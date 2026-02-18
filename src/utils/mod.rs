@@ -2,6 +2,7 @@
 
 pub mod circuit_breaker;
 pub mod error;
+pub mod fs;
 pub mod paths;
 pub mod security;
 

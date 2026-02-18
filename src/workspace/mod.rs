@@ -28,15 +28,6 @@ pub enum WorkspaceError {
     Other(String),
 }
 
-/// Workspace file names and their default content
-const WORKSPACE_FILES: &[(&str, &str)] = &[
-    ("SOUL.md", templates::DEFAULT_SOUL),
-    ("AGENTS.md", templates::DEFAULT_AGENTS),
-    ("USER.md", templates::DEFAULT_USER),
-    ("TOOLS.md", templates::DEFAULT_TOOLS),
-    ("HEARTBEAT.md", templates::DEFAULT_HEARTBEAT),
-];
-
 /// Represents the loaded workspace context for the agent
 #[derive(Debug, Clone, Default)]
 pub struct WorkspaceContext {
@@ -140,7 +131,7 @@ pub fn initialize_workspace(base_path: &Path, verbose: bool) -> Result<()> {
     }
 
     // Create all markdown files
-    for (filename, content) in WORKSPACE_FILES {
+    for (filename, content) in templates::WORKSPACE_FILES {
         let file_path = workspace_path.join(filename);
 
         if !file_path.exists() {
@@ -338,7 +329,7 @@ pub fn repair_workspace(base_path: &Path, verbose: bool) -> Result<()> {
 
     let mut recreated_count = 0;
 
-    for (filename, content) in WORKSPACE_FILES {
+    for (filename, content) in templates::WORKSPACE_FILES {
         let file_path = workspace_path.join(filename);
 
         if !file_path.exists() {
@@ -379,7 +370,10 @@ pub fn repair_workspace(base_path: &Path, verbose: bool) -> Result<()> {
 /// # Returns
 /// * `Vec<&str>` - List of workspace filenames
 pub fn get_workspace_files() -> Vec<&'static str> {
-    WORKSPACE_FILES.iter().map(|(name, _)| *name).collect()
+    templates::WORKSPACE_FILES
+        .iter()
+        .map(|(name, _)| *name)
+        .collect()
 }
 
 /// Check if a specific workspace file exists
@@ -438,7 +432,7 @@ mod tests {
 
         initialize_workspace(&base_path, false).unwrap();
 
-        for (filename, _) in WORKSPACE_FILES {
+        for (filename, _) in templates::WORKSPACE_FILES {
             let file_path = workspace_path.join(filename);
             assert!(file_path.exists(), "{} should exist", filename);
             assert!(file_path.is_file(), "{} should be a file", filename);

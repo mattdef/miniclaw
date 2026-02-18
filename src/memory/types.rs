@@ -86,6 +86,16 @@ impl fmt::Display for MemoryError {
     }
 }
 
+impl MemoryError {
+    /// Construct a `StorageFailed` variant from an operation name and IO error.
+    pub fn storage_failed(operation: impl Into<String>, source: std::io::Error) -> Self {
+        Self::StorageFailed {
+            operation: operation.into(),
+            source,
+        }
+    }
+}
+
 impl std::error::Error for MemoryError {}
 
 #[cfg(test)]

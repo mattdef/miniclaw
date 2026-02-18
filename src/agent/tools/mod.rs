@@ -8,6 +8,7 @@ pub mod exec;
 pub mod filesystem;
 pub mod memory;
 pub mod message;
+pub mod security;
 pub mod skill;
 pub mod spawn;
 pub mod types;
@@ -95,9 +96,9 @@ impl ToolRegistry {
 
         // Register filesystem tool
         if let Err(e) = registry
-            .register(Box::new(crate::agent::tools::filesystem::FilesystemTool::new(
-                workspace_path.clone(),
-            )))
+            .register(Box::new(
+                crate::agent::tools::filesystem::FilesystemTool::new(workspace_path.clone()),
+            ))
             .await
         {
             tracing::warn!(error = %e, "Failed to register filesystem tool, continuing without it");
@@ -141,7 +142,7 @@ impl ToolRegistry {
         // Register cron tool and start scheduler
         let cron_scheduler = crate::cron::CronScheduler::new();
         let cron_tool = crate::agent::tools::cron::CronTool::new(cron_scheduler.clone());
-        
+
         if let Err(e) = registry.register(Box::new(cron_tool)).await {
             tracing::warn!(error = %e, "Failed to register cron tool, continuing without it");
         } else {
@@ -211,7 +212,10 @@ impl ToolRegistry {
         }
 
         let tool_count = registry.len().await;
-        tracing::info!(tool_count = tool_count, "Tool registry initialized with default tools");
+        tracing::info!(
+            tool_count = tool_count,
+            "Tool registry initialized with default tools"
+        );
 
         registry
     }
@@ -716,13 +720,9 @@ mod tests {
         let chat_hub = Arc::new(ChatHub::new());
         let config = Config::default();
 
-        let registry = ToolRegistry::with_all_default_tools(
-            workspace_path,
-            chat_hub,
-            &config,
-            "test_channel",
-        )
-        .await;
+        let registry =
+            ToolRegistry::with_all_default_tools(workspace_path, chat_hub, &config, "test_channel")
+                .await;
 
         // Should have registered all tools
         assert!(!registry.is_empty().await);

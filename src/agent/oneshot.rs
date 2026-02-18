@@ -97,19 +97,18 @@ pub async fn execute_one_shot(
 
     // Create a temporary session manager (not persisted)
     let temp_dir = std::env::temp_dir();
-    let session_manager = Arc::new(tokio::sync::RwLock::new(
-        crate::session::SessionManager::new(temp_dir),
-    ));
+    let session_manager = Arc::new(crate::session::SessionManager::new(temp_dir));
 
     // Create the agent loop with model override
-    let agent_loop = AgentLoop::with_model(
+    let agent_loop = AgentLoop::builder(
         chat_hub,
         provider,
         context_builder,
         tool_registry,
         session_manager,
-        model,
-    );
+    )
+    .with_model(model)
+    .build();
 
     // Create the inbound message
     let inbound_message = InboundMessage::new("cli", "oneshot", message);

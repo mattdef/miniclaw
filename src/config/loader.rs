@@ -76,26 +76,8 @@ pub fn load_config(cli_model: Option<String>, cli_config_path: Option<PathBuf>) 
 
 /// Apply CLI --model flag to override provider_config.default_model
 fn apply_cli_model_override(config: &mut Config, model: &str) {
-    use crate::providers::ProviderConfig;
-
     if let Some(ref mut provider_config) = config.provider_config {
-        // Override the model in existing provider_config
-        match provider_config {
-            ProviderConfig::OpenRouter(cfg) => {
-                cfg.default_model = model.to_string();
-            }
-            ProviderConfig::OpenAi(cfg) => {
-                cfg.default_model = model.to_string();
-            }
-            ProviderConfig::Kimi(cfg) => {
-                cfg.default_model = model.to_string();
-            }
-            ProviderConfig::Ollama(cfg) => {
-                cfg.default_model = model.to_string();
-            }
-            #[cfg(test)]
-            ProviderConfig::Mock => {}
-        }
+        provider_config.set_default_model(model.to_string());
     } else {
         // No provider_config yet - we'll set the legacy field as a fallback
         // This will be used when provider is created later
@@ -135,32 +117,27 @@ fn merge_config_from_file(config: Config, path: &PathBuf) -> Result<Config> {
         ConfigError::InvalidJson(e)
     })?;
 
-    // Warn about deprecated 'model' field at root level
-    if file_config.model.is_some() {
-        tracing::warn!(
-            "Config file contains deprecated 'model' field at root level. \
-             This field is ignored. Use 'provider_config.default_model' instead. \
-             Run 'miniclaw onboard' to update your configuration."
-        );
+    macro_rules! warn_deprecated {
+        ($field:expr, $name:literal, $replacement:literal) => {
+            if $field.is_some() {
+                tracing::warn!(
+                    "Config file contains deprecated '{}' field at root level. \
+                     This field is ignored. Use '{}' instead. \
+                     Run 'miniclaw onboard' to update your configuration.",
+                    $name,
+                    $replacement
+                );
+            }
+        };
     }
 
-    // Warn about deprecated 'api_key' field at root level
-    if file_config.api_key.is_some() {
-        tracing::warn!(
-            "Config file contains deprecated 'api_key' field at root level. \
-             This field is ignored. Use 'provider_config.api_key' instead. \
-             Run 'miniclaw onboard' to update your configuration."
-        );
-    }
-
-    // Warn about deprecated 'provider_type' field at root level
-    if file_config.provider_type.is_some() {
-        tracing::warn!(
-            "Config file contains deprecated 'provider_type' field at root level. \
-             This field is ignored. Use 'provider_config.type' instead. \
-             Run 'miniclaw onboard' to update your configuration."
-        );
-    }
+    warn_deprecated!(file_config.model, "model", "provider_config.default_model");
+    warn_deprecated!(file_config.api_key, "api_key", "provider_config.api_key");
+    warn_deprecated!(
+        file_config.provider_type,
+        "provider_type",
+        "provider_config.type"
+    );
 
     Ok(Config {
         api_key: None, // Deprecated, ignored

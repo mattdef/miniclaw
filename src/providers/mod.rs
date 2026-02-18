@@ -41,7 +41,8 @@ pub use error::ProviderError;
 
 // Export factory types and configs
 pub use factory::{
-    KimiConfig, OllamaConfig, OpenAiConfig, OpenRouterConfig, ProviderConfig, ProviderFactory,
+    ApiKeyProviderConfig, KimiConfig, OllamaConfig, OpenAiConfig, OpenRouterConfig, ProviderConfig,
+    ProviderFactory,
 };
 
 // Export OpenAI-compatible providers

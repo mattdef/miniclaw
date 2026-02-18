@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
+use tokio::sync::Mutex;
 use tokio::sync::RwLock;
 use tokio::sync::mpsc;
 
@@ -27,9 +28,9 @@ pub type DeliveryFailureCallback = Arc<dyn Fn(String, OutboundMessage) + Send + 
 
 pub struct ChatHub {
     inbound_tx: mpsc::Sender<InboundMessage>,
-    inbound_rx: Arc<RwLock<mpsc::Receiver<InboundMessage>>>,
+    inbound_rx: Mutex<mpsc::Receiver<InboundMessage>>,
     outbound_tx: mpsc::Sender<OutboundMessage>,
-    outbound_rx: Arc<RwLock<mpsc::Receiver<OutboundMessage>>>,
+    outbound_rx: Mutex<mpsc::Receiver<OutboundMessage>>,
     channels: Arc<RwLock<HashMap<String, mpsc::Sender<OutboundMessage>>>>,
     delivery_failure_callback: Option<DeliveryFailureCallback>,
     agent_tx: Option<mpsc::Sender<InboundMessage>>,
@@ -46,9 +47,9 @@ impl ChatHub {
 
         Self {
             inbound_tx,
-            inbound_rx: Arc::new(RwLock::new(inbound_rx)),
+            inbound_rx: Mutex::new(inbound_rx),
             outbound_tx,
-            outbound_rx: Arc::new(RwLock::new(outbound_rx)),
+            outbound_rx: Mutex::new(outbound_rx),
             channels: Arc::new(RwLock::new(HashMap::new())),
             delivery_failure_callback: None,
             agent_tx: None,
@@ -109,7 +110,7 @@ impl ChatHub {
             Ok(_) => Ok(()),
             Err(mpsc::error::TrySendError::Full(msg)) => {
                 tracing::warn!("Inbound buffer full, dropping oldest message");
-                if let Ok(mut rx) = self.inbound_rx.try_write() {
+                if let Ok(mut rx) = self.inbound_rx.try_lock() {
                     let _ = rx.try_recv();
                 }
                 self.inbound_tx
@@ -134,7 +135,7 @@ impl ChatHub {
                     Ok(_) => Ok(()),
                     Err(mpsc::error::TrySendError::Full(msg)) => {
                         tracing::warn!("Outbound buffer still full, dropping oldest message");
-                        if let Ok(mut rx) = self.outbound_rx.try_write() {
+                        if let Ok(mut rx) = self.outbound_rx.try_lock() {
                             let _ = rx.try_recv();
                         }
                         self.outbound_tx
@@ -267,7 +268,7 @@ impl ChatHub {
         tracing::info!("Draining ChatHub channels...");
 
         // Drain inbound
-        let mut inbound_rx = self.inbound_rx.write().await;
+        let mut inbound_rx = self.inbound_rx.lock().await;
         while let Ok(msg) = inbound_rx.try_recv() {
             tracing::debug!(
                 channel = %msg.channel,
@@ -277,7 +278,7 @@ impl ChatHub {
         }
 
         // Drain outbound and route them
-        let mut outbound_rx = self.outbound_rx.write().await;
+        let mut outbound_rx = self.outbound_rx.lock().await;
         while let Ok(msg) = outbound_rx.try_recv() {
             tracing::debug!(
                 channel = %msg.channel,
@@ -292,12 +293,12 @@ impl ChatHub {
     }
 
     async fn recv_inbound(&self) -> Option<InboundMessage> {
-        let mut rx = self.inbound_rx.write().await;
+        let mut rx = self.inbound_rx.lock().await;
         rx.recv().await
     }
 
     async fn recv_outbound(&self) -> Option<OutboundMessage> {
-        let mut rx = self.outbound_rx.write().await;
+        let mut rx = self.outbound_rx.lock().await;
         rx.recv().await
     }
 
@@ -308,7 +309,7 @@ impl ChatHub {
             Ok(()) => Ok(()),
             Err(mpsc::error::TrySendError::Full(msg)) => {
                 tracing::warn!("Outbound buffer full, dropping oldest message");
-                if let Ok(mut rx) = self.outbound_rx.try_write() {
+                if let Ok(mut rx) = self.outbound_rx.try_lock() {
                     let _ = rx.try_recv();
                 }
                 self.outbound_tx
@@ -321,7 +322,7 @@ impl ChatHub {
 
     #[cfg(test)]
     pub async fn test_try_recv_outbound(&self) -> Option<OutboundMessage> {
-        let mut rx = self.outbound_rx.write().await;
+        let mut rx = self.outbound_rx.lock().await;
         rx.try_recv().ok()
     }
 }
@@ -399,7 +400,7 @@ mod tests {
             .unwrap();
 
         // Check that we can still receive
-        let mut rx = hub.inbound_rx.write().await;
+        let mut rx = hub.inbound_rx.lock().await;
         let msg1 = rx.recv().await.unwrap();
         // Since we dropped the oldest (msg 0), the first one should be msg 1
         assert_eq!(msg1.content, "msg 1");
@@ -428,7 +429,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut rx = hub.inbound_rx.write().await;
+        let mut rx = hub.inbound_rx.lock().await;
         let received = rx.try_recv().unwrap();
         assert_eq!(received.content, "valid");
         assert!(rx.try_recv().is_err()); // Should be empty
@@ -439,7 +440,7 @@ mod tests {
         let hub = ChatHub::new();
         hub.reply("telegram", "123", "Hello").await.unwrap();
 
-        let mut rx = hub.outbound_rx.write().await;
+        let mut rx = hub.outbound_rx.lock().await;
         let msg = rx.try_recv().unwrap();
         assert_eq!(msg.content, "Hello");
         assert_eq!(msg.channel, "telegram");
@@ -452,7 +453,7 @@ mod tests {
             .await
             .unwrap();
 
-        let mut rx = hub.outbound_rx.write().await;
+        let mut rx = hub.outbound_rx.lock().await;
         let msg = rx.try_recv().unwrap();
         assert_eq!(msg.content, "Reply");
         assert_eq!(msg.reply_to, Some("mid_456".to_string()));
@@ -475,7 +476,7 @@ mod tests {
             .unwrap();
 
         // Check that we can still receive
-        let mut rx = hub.outbound_rx.write().await;
+        let mut rx = hub.outbound_rx.lock().await;
         let msg1 = rx.recv().await.unwrap();
         // Since we dropped the oldest (msg 0), the first one should be msg 1
         assert_eq!(msg1.content, "msg 1");

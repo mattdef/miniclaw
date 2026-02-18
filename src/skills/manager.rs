@@ -349,14 +349,9 @@ impl SkillsManager {
     ///
     /// # Arguments
     /// * `name` - Skill name
-    /// * `_built_in_tools` - Deprecated parameter (kept for API compatibility)
     ///
     /// FIX #7: Use centralized BUILT_IN_TOOLS constant as single source of truth
-    pub async fn delete_skill(
-        &self,
-        name: &str,
-        _built_in_tools: &[String],
-    ) -> Result<(), SkillManagerError> {
+    pub async fn delete_skill(&self, name: &str) -> Result<(), SkillManagerError> {
         // Check if it's a built-in tool using centralized constant
         if BUILT_IN_TOOLS.contains(&name) {
             return Err(SkillManagerError::BuiltInSkillDeletion {
@@ -878,7 +873,7 @@ mod tests {
 
         assert!(manager.skill_exists("delete_me").await);
 
-        manager.delete_skill("delete_me", &[]).await.unwrap();
+        manager.delete_skill("delete_me").await.unwrap();
 
         assert!(!manager.skill_exists("delete_me").await);
 
@@ -890,7 +885,7 @@ mod tests {
     async fn test_delete_skill_builtin_protection() {
         let (_temp_dir, manager) = setup_test_manager().await;
 
-        let result = manager.delete_skill("filesystem", &[]).await;
+        let result = manager.delete_skill("filesystem").await;
         assert!(result.is_err());
         assert!(
             result
@@ -904,7 +899,7 @@ mod tests {
     async fn test_delete_skill_not_found() {
         let (_temp_dir, manager) = setup_test_manager().await;
 
-        let result = manager.delete_skill("nonexistent", &[]).await;
+        let result = manager.delete_skill("nonexistent").await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("not found"));
     }

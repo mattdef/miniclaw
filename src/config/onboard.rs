@@ -140,13 +140,7 @@ fn confirm_configuration(config: &Config) -> Result<bool> {
     println!();
     println!("Please review your configuration:");
     println!();
-
-    if let Some(provider_config) = &config.provider_config {
-        println!("  Provider: {}", provider_config.provider_type());
-        println!("  Model: {}", provider_config.default_model());
-    } else {
-        println!("  Provider: (not set)");
-    }
+    println!("{}", format_provider_summary(config));
 
     if let Some(token) = &config.telegram_token {
         println!("  Telegram Bot: {}", mask_secret(token));
@@ -288,13 +282,6 @@ fn prompt_provider_selection(verbose: bool) -> Result<Option<crate::providers::P
     }
 }
 
-#[allow(dead_code)]
-fn prompt_api_key(_verbose: bool) -> Result<Option<String>> {
-    // This function is now replaced by prompt_provider_selection
-    // Keeping for backward compatibility but it's no longer used
-    Ok(None)
-}
-
 fn prompt_telegram_token(verbose: bool) -> Result<Option<String>> {
     println!();
     println!("Telegram Bot Configuration");
@@ -414,10 +401,7 @@ fn save_configuration(base_path: &Path, config: &Config, verbose: bool) -> Resul
 
         // Show values in verbose mode
         println!("Saved values:");
-        if let Some(provider_config) = &config.provider_config {
-            println!("  Provider: {}", provider_config.provider_type());
-            println!("  Model: {}", provider_config.default_model());
-        }
+        println!("{}", format_provider_summary(config));
         if let Some(token) = &config.telegram_token {
             println!("  Telegram Token: {}", mask_secret(token));
         }
@@ -433,13 +417,7 @@ fn save_configuration(base_path: &Path, config: &Config, verbose: bool) -> Resul
 fn display_completion_summary(config: &Config, verbose: bool) {
     println!();
     println!("Configuration Complete!");
-
-    if let Some(provider_config) = &config.provider_config {
-        println!("Provider: {}", provider_config.provider_type());
-        println!("Model: {}", provider_config.default_model());
-    } else {
-        println!("Provider: (not set)");
-    }
+    println!("{}", format_provider_summary(config));
 
     if let Some(token) = &config.telegram_token {
         println!("Telegram Bot: {}", mask_secret(token));
@@ -463,6 +441,22 @@ fn display_completion_summary(config: &Config, verbose: bool) {
 
     if verbose {
         tracing::debug!("Onboarding completed successfully");
+    }
+}
+
+/// Formats provider type and model as a human-readable summary string.
+///
+/// Returns lines suitable for printing in configuration display contexts.
+/// When no provider is configured, returns a single "(not set)" line.
+fn format_provider_summary(config: &Config) -> String {
+    if let Some(provider_config) = &config.provider_config {
+        format!(
+            "  Provider: {}\n  Model: {}",
+            provider_config.provider_type(),
+            provider_config.default_model()
+        )
+    } else {
+        "  Provider: (not set)".to_string()
     }
 }
 

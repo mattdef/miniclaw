@@ -10,6 +10,7 @@ use tokio::fs;
 use tokio::sync::Mutex;
 
 use crate::memory::types::MemoryError;
+use crate::utils::fs::file_exists;
 
 /// Maximum file size for MEMORY.md (1MB)
 const MEMORY_FILE_SIZE_LIMIT: u64 = 1024 * 1024;
@@ -26,13 +27,12 @@ const TIMESTAMP_SUFFIX: &str = "(added at ";
 /// * `Ok(())` - Always returns Ok, logs warning if file is too large
 /// * `Err(MemoryError)` - Only for metadata read errors
 async fn check_file_size(file_path: &Path) -> Result<(), MemoryError> {
-    if file_path.exists() {
-        let metadata = fs::metadata(file_path)
-            .await
-            .map_err(|e| MemoryError::StorageFailed {
-                operation: format!("get file metadata for {}", file_path.display()),
-                source: e,
-            })?;
+    if file_exists(file_path).await.map_err(|e| {
+        MemoryError::storage_failed(format!("check existence of {}", file_path.display()), e)
+    })? {
+        let metadata = fs::metadata(file_path).await.map_err(|e| {
+            MemoryError::storage_failed(format!("get file metadata for {}", file_path.display()), e)
+        })?;
 
         let size = metadata.len();
         if size > MEMORY_FILE_SIZE_LIMIT {
@@ -160,25 +160,30 @@ impl LongTermMemory {
     /// * `Ok(())` - File exists or was created successfully
     /// * `Err(MemoryError)` - If creation fails
     pub async fn ensure_exists(&self) -> Result<(), MemoryError> {
-        if !self.file_path.exists() {
+        if !file_exists(&self.file_path).await.map_err(|e| {
+            MemoryError::storage_failed(
+                format!("check existence of {}", self.file_path.display()),
+                e,
+            )
+        })? {
             // Create parent directories
             if let Some(parent) = self.file_path.parent() {
-                fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| MemoryError::StorageFailed {
-                        operation: format!("create memory directory {}", parent.display()),
-                        source: e,
-                    })?;
+                fs::create_dir_all(parent).await.map_err(|e| {
+                    MemoryError::storage_failed(
+                        format!("create memory directory {}", parent.display()),
+                        e,
+                    )
+                })?;
             }
 
             // Create default template
             let template = "# Memory\n\n";
-            fs::write(&self.file_path, template)
-                .await
-                .map_err(|e| MemoryError::StorageFailed {
-                    operation: format!("create memory file {}", self.file_path.display()),
-                    source: e,
-                })?;
+            fs::write(&self.file_path, template).await.map_err(|e| {
+                MemoryError::storage_failed(
+                    format!("create memory file {}", self.file_path.display()),
+                    e,
+                )
+            })?;
 
             // Set permissions to 0600 (owner read/write only)
             #[cfg(unix)]
@@ -186,10 +191,10 @@ impl LongTermMemory {
                 use std::os::unix::fs::PermissionsExt;
                 let perms = std::fs::Permissions::from_mode(0o600);
                 std::fs::set_permissions(&self.file_path, perms).map_err(|e| {
-                    MemoryError::StorageFailed {
-                        operation: format!("set file permissions for {}", self.file_path.display()),
-                        source: e,
-                    }
+                    MemoryError::storage_failed(
+                        format!("set file permissions for {}", self.file_path.display()),
+                        e,
+                    )
                 })?;
             }
 
@@ -236,13 +241,9 @@ impl LongTermMemory {
         let entry_line = format!("- {} {} {})\n", content.trim(), TIMESTAMP_SUFFIX, timestamp);
 
         // Read existing content
-        let existing =
-            fs::read_to_string(&self.file_path)
-                .await
-                .map_err(|e| MemoryError::StorageFailed {
-                    operation: format!("read memory file {}", self.file_path.display()),
-                    source: e,
-                })?;
+        let existing = fs::read_to_string(&self.file_path).await.map_err(|e| {
+            MemoryError::storage_failed(format!("read memory file {}", self.file_path.display()), e)
+        })?;
 
         // Check if today's section exists
         let today_header = format!("## {}", today);
@@ -259,12 +260,12 @@ impl LongTermMemory {
         };
 
         // Write updated content
-        fs::write(&self.file_path, new_content)
-            .await
-            .map_err(|e| MemoryError::StorageFailed {
-                operation: format!("write memory file {}", self.file_path.display()),
-                source: e,
-            })?;
+        fs::write(&self.file_path, new_content).await.map_err(|e| {
+            MemoryError::storage_failed(
+                format!("write memory file {}", self.file_path.display()),
+                e,
+            )
+        })?;
 
         // Set permissions again in case file was recreated
         #[cfg(unix)]
@@ -303,17 +304,18 @@ impl LongTermMemory {
         }
         drop(cache);
 
-        if !self.file_path.exists() {
+        if !file_exists(&self.file_path).await.map_err(|e| {
+            MemoryError::storage_failed(
+                format!("check existence of {}", self.file_path.display()),
+                e,
+            )
+        })? {
             return Ok(Vec::new());
         }
 
-        let content =
-            fs::read_to_string(&self.file_path)
-                .await
-                .map_err(|e| MemoryError::StorageFailed {
-                    operation: format!("read memory file {}", self.file_path.display()),
-                    source: e,
-                })?;
+        let content = fs::read_to_string(&self.file_path).await.map_err(|e| {
+            MemoryError::storage_failed(format!("read memory file {}", self.file_path.display()), e)
+        })?;
 
         let sections = Self::parse_memory_content(&content)?;
 

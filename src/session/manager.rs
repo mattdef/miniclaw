@@ -1,7 +1,7 @@
 use crate::session::persistence::Persistence;
 use crate::session::types::{Message, Session};
 use crate::utils::MiniClawError;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::RwLock;
@@ -15,6 +15,11 @@ pub const PERSISTENCE_INTERVAL_SECS: u64 = 30;
 
 pub struct SessionManager {
     sessions: Arc<RwLock<HashMap<String, Session>>>,
+    /// Set of session IDs that have been modified since last save.
+    ///
+    /// Only sessions in this set are written to disk by `save_all_sessions()`,
+    /// avoiding unnecessary I/O for unchanged sessions.
+    dirty_sessions: Arc<RwLock<HashSet<String>>>,
     persistence: Arc<Persistence>,
 }
 
@@ -23,6 +28,7 @@ impl SessionManager {
         let persistence = Arc::new(Persistence::new(sessions_dir));
         Self {
             sessions: Arc::new(RwLock::new(HashMap::new())),
+            dirty_sessions: Arc::new(RwLock::new(HashSet::new())),
             persistence,
         }
     }
@@ -71,10 +77,12 @@ impl SessionManager {
                 Ok(session)
             }
             Err(_) => {
-                // Create new session
+                // Create new session and mark dirty so it gets persisted
                 let session = Session::new(channel.to_string(), chat_id.to_string());
                 let mut guard = self.sessions.write().await;
-                guard.insert(session_id, session.clone());
+                guard.insert(session_id.clone(), session.clone());
+                drop(guard);
+                self.dirty_sessions.write().await.insert(session_id);
                 Ok(session)
             }
         }
@@ -90,6 +98,11 @@ impl SessionManager {
 
         if let Some(session) = guard.get_mut(session_id) {
             session.add_message(message); // Update then drop guard
+            drop(guard);
+            self.dirty_sessions
+                .write()
+                .await
+                .insert(session_id.to_string());
             Ok(())
         } else {
             Err(MiniClawError::session_persistence(
@@ -109,27 +122,75 @@ impl SessionManager {
         guard.get(session_id).cloned() // Clone then drop guard
     }
 
-    /// Saves all sessions to disk.
+    /// Saves all dirty sessions to disk and clears the dirty set.
     ///
-    /// **Lock Scope Pattern**: Acquires read lock, clones all sessions,
+    /// **Lock Scope Pattern**: Acquires read lock, clones dirty session IDs,
     /// explicitly drops lock, THEN performs I/O. Never holds lock during
     /// disk operations to prevent blocking other threads.
+    ///
+    /// Only sessions that have been modified since the last save are written,
+    /// avoiding redundant disk writes for unchanged sessions.
+    /// Saves are performed in parallel using `JoinSet`.
     pub async fn save_all_sessions(&self) -> Result<()> {
-        let guard = self.sessions.read().await;
-        let sessions: Vec<Session> = guard.values().cloned().collect();
-        drop(guard); // Explicit drop before I/O operations
+        // Collect dirty session IDs and clear the set atomically
+        let dirty_ids: HashSet<String> = {
+            let mut dirty = self.dirty_sessions.write().await;
+            std::mem::take(&mut *dirty)
+        };
+
+        if dirty_ids.is_empty() {
+            debug!("No dirty sessions to save");
+            return Ok(());
+        }
+
+        // Clone only the dirty sessions (brief read lock)
+        let sessions: Vec<Session> = {
+            let guard = self.sessions.read().await;
+            dirty_ids
+                .iter()
+                .filter_map(|id| guard.get(id).cloned())
+                .collect()
+        };
+
+        debug!(
+            dirty_count = sessions.len(),
+            "Saving dirty sessions to disk"
+        );
+
+        // Save in parallel using JoinSet
+        let mut join_set: tokio::task::JoinSet<std::result::Result<(), (String, MiniClawError)>> =
+            tokio::task::JoinSet::new();
 
         for session in sessions {
-            if let Err(e) = self.persistence.save_session(&session).await {
-                error!(
-                    session_id = %session.session_id,
-                    error = %e,
-                    "Failed to save session"
-                );
+            let persistence = Arc::clone(&self.persistence);
+            join_set.spawn(async move {
+                persistence
+                    .save_session(&session)
+                    .await
+                    .map_err(|e| (session.session_id.clone(), e))
+            });
+        }
+
+        // Collect results — re-mark failed sessions as dirty for retry
+        while let Some(result) = join_set.join_next().await {
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err((session_id, e))) => {
+                    error!(
+                        session_id = %session_id,
+                        error = %e,
+                        "Failed to save session"
+                    );
+                    // Re-mark as dirty so it will be retried next cycle
+                    self.dirty_sessions.write().await.insert(session_id);
+                }
+                Err(join_err) => {
+                    error!(error = %join_err, "Session save task panicked");
+                }
             }
         }
 
-        info!("Saved all sessions to disk");
+        info!("Saved dirty sessions to disk");
         Ok(())
     }
 
@@ -145,6 +206,7 @@ impl SessionManager {
         &self,
     ) -> (tokio::task::JoinHandle<()>, tokio::sync::mpsc::Sender<()>) {
         let sessions = Arc::clone(&self.sessions);
+        let dirty_sessions = Arc::clone(&self.dirty_sessions);
         let persistence = Arc::clone(&self.persistence);
         let (shutdown_tx, mut shutdown_rx) = tokio::sync::mpsc::channel::<()>(1);
 
@@ -154,12 +216,26 @@ impl SessionManager {
             loop {
                 tokio::select! {
                     _ = interval.tick() => {
-                        // Brief read lock, clone, release before I/O
-                        let guard = sessions.read().await;
-                        let sessions_vec: Vec<Session> = guard.values().cloned().collect();
-                        drop(guard);
+                        // Collect and clear dirty IDs atomically
+                        let dirty_ids: HashSet<String> = {
+                            let mut dirty = dirty_sessions.write().await;
+                            std::mem::take(&mut *dirty)
+                        };
 
-                        debug!(session_count = sessions_vec.len(), "Auto-persistence cycle starting");
+                        if dirty_ids.is_empty() {
+                            debug!("Auto-persistence: no dirty sessions");
+                            continue;
+                        }
+
+                        // Clone only dirty sessions (brief read lock)
+                        let sessions_vec: Vec<Session> = {
+                            let guard = sessions.read().await;
+                            dirty_ids.iter()
+                                .filter_map(|id| guard.get(id).cloned())
+                                .collect()
+                        };
+
+                        debug!(dirty_count = sessions_vec.len(), "Auto-persistence cycle starting");
 
                         let mut failed_count = 0;
                         for session in sessions_vec {
@@ -169,6 +245,8 @@ impl SessionManager {
                                     error = %e,
                                     "Auto-persistence failed for session"
                                 );
+                                // Re-mark as dirty so it will be retried
+                                dirty_sessions.write().await.insert(session.session_id.clone());
                                 failed_count += 1;
                             }
                         }
@@ -194,10 +272,13 @@ impl SessionManager {
         self.sessions.read().await.len()
     }
 
-    /// Updates (or inserts) a complete session in the manager
+    /// Updates (or inserts) a complete session in the manager and marks it dirty.
     pub async fn update_session(&self, session: Session) -> Result<()> {
+        let session_id = session.session_id.clone();
         let mut guard = self.sessions.write().await;
-        guard.insert(session.session_id.clone(), session);
+        guard.insert(session_id.clone(), session);
+        drop(guard);
+        self.dirty_sessions.write().await.insert(session_id);
         Ok(())
     }
 

@@ -1,5 +1,5 @@
 use std::sync::{Arc, Mutex};
-use tokio::sync::{RwLock, mpsc};
+use tokio::sync::mpsc;
 
 use crate::agent::metrics::ResponseMetrics;
 use crate::agent::tools::ToolRegistry;
@@ -58,13 +58,69 @@ pub trait ContextBuilder: Send + Sync {
     ) -> Result<Vec<LlmMessage>>;
 }
 
+/// Builder for constructing an [`AgentLoop`] with optional overrides.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// let agent = AgentLoop::builder(chat_hub, llm_provider, context_builder, tool_registry, session_manager)
+///     .with_model("gpt-4o")
+///     .with_inbound_receiver(rx)
+///     .build();
+/// ```
+pub struct AgentLoopBuilder {
+    chat_hub: Arc<ChatHub>,
+    llm_provider: Arc<dyn LlmProvider>,
+    context_builder: Arc<dyn ContextBuilder>,
+    tool_registry: Arc<ToolRegistry>,
+    session_manager: Arc<SessionManager>,
+    model: Option<String>,
+    inbound_rx: Option<mpsc::Receiver<InboundMessage>>,
+}
+
+impl AgentLoopBuilder {
+    /// Overrides the model used for LLM calls.
+    ///
+    /// Defaults to the provider's `default_model()` if not set.
+    pub fn with_model(mut self, model: impl Into<String>) -> Self {
+        self.model = Some(model.into());
+        self
+    }
+
+    /// Sets the inbound message receiver for the agent loop.
+    ///
+    /// Required when calling [`AgentLoop::run`].
+    pub fn with_inbound_receiver(mut self, rx: mpsc::Receiver<InboundMessage>) -> Self {
+        self.inbound_rx = Some(rx);
+        self
+    }
+
+    /// Consumes the builder and returns a configured [`AgentLoop`].
+    pub fn build(self) -> AgentLoop {
+        let model = self
+            .model
+            .unwrap_or_else(|| self.llm_provider.default_model());
+        AgentLoop {
+            chat_hub: self.chat_hub,
+            llm_provider: self.llm_provider,
+            context_builder: self.context_builder,
+            tool_registry: self.tool_registry,
+            session_manager: self.session_manager,
+            max_iterations: MAX_ITERATIONS,
+            model,
+            response_metrics: Arc::new(ResponseMetrics::new()),
+            inbound_rx: Mutex::new(self.inbound_rx),
+        }
+    }
+}
+
 /// The main agent loop that orchestrates message processing
 pub struct AgentLoop {
     chat_hub: Arc<ChatHub>,
     llm_provider: Arc<dyn LlmProvider>,
     context_builder: Arc<dyn ContextBuilder>,
     tool_registry: Arc<ToolRegistry>,
-    session_manager: Arc<RwLock<SessionManager>>,
+    session_manager: Arc<SessionManager>,
     max_iterations: u32,
     model: String,
     response_metrics: Arc<ResponseMetrics>,
@@ -72,95 +128,30 @@ pub struct AgentLoop {
 }
 
 impl AgentLoop {
-    /// Creates a new AgentLoop with the required dependencies
-    pub fn new(
+    /// Returns a builder for constructing an [`AgentLoop`].
+    ///
+    /// # Arguments
+    ///
+    /// * `chat_hub` - Shared chat hub for sending/receiving messages
+    /// * `llm_provider` - LLM provider implementation
+    /// * `context_builder` - Context assembly implementation
+    /// * `tool_registry` - Registry of available tools
+    /// * `session_manager` - Shared session manager
+    pub fn builder(
         chat_hub: Arc<ChatHub>,
         llm_provider: Arc<dyn LlmProvider>,
         context_builder: Arc<dyn ContextBuilder>,
         tool_registry: Arc<ToolRegistry>,
-        session_manager: Arc<RwLock<SessionManager>>,
-    ) -> Self {
-        let model = llm_provider.default_model();
-        Self {
+        session_manager: Arc<SessionManager>,
+    ) -> AgentLoopBuilder {
+        AgentLoopBuilder {
             chat_hub,
             llm_provider,
             context_builder,
             tool_registry,
             session_manager,
-            max_iterations: MAX_ITERATIONS,
-            model,
-            response_metrics: Arc::new(ResponseMetrics::new()),
-            inbound_rx: Mutex::new(None),
-        }
-    }
-
-    /// Creates a new AgentLoop with an inbound message receiver
-    pub fn with_inbound_receiver(
-        chat_hub: Arc<ChatHub>,
-        llm_provider: Arc<dyn LlmProvider>,
-        context_builder: Arc<dyn ContextBuilder>,
-        tool_registry: Arc<ToolRegistry>,
-        session_manager: Arc<RwLock<SessionManager>>,
-        inbound_rx: mpsc::Receiver<InboundMessage>,
-    ) -> Self {
-        let model = llm_provider.default_model();
-        Self {
-            chat_hub,
-            llm_provider,
-            context_builder,
-            tool_registry,
-            session_manager,
-            max_iterations: MAX_ITERATIONS,
-            model,
-            response_metrics: Arc::new(ResponseMetrics::new()),
-            inbound_rx: Mutex::new(Some(inbound_rx)),
-        }
-    }
-
-    /// Creates a new AgentLoop with a specific model override
-    pub fn with_model(
-        chat_hub: Arc<ChatHub>,
-        llm_provider: Arc<dyn LlmProvider>,
-        context_builder: Arc<dyn ContextBuilder>,
-        tool_registry: Arc<ToolRegistry>,
-        session_manager: Arc<RwLock<SessionManager>>,
-        model: impl Into<String>,
-    ) -> Self {
-        let model = model.into();
-        Self {
-            chat_hub,
-            llm_provider,
-            context_builder,
-            tool_registry,
-            session_manager,
-            max_iterations: MAX_ITERATIONS,
-            model,
-            response_metrics: Arc::new(ResponseMetrics::new()),
-            inbound_rx: Mutex::new(None),
-        }
-    }
-
-    /// Creates a new AgentLoop with a specific model override and inbound receiver
-    pub fn with_model_and_receiver(
-        chat_hub: Arc<ChatHub>,
-        llm_provider: Arc<dyn LlmProvider>,
-        context_builder: Arc<dyn ContextBuilder>,
-        tool_registry: Arc<ToolRegistry>,
-        session_manager: Arc<RwLock<SessionManager>>,
-        model: impl Into<String>,
-        inbound_rx: mpsc::Receiver<InboundMessage>,
-    ) -> Self {
-        let model = model.into();
-        Self {
-            chat_hub,
-            llm_provider,
-            context_builder,
-            tool_registry,
-            session_manager,
-            max_iterations: MAX_ITERATIONS,
-            model,
-            response_metrics: Arc::new(ResponseMetrics::new()),
-            inbound_rx: Mutex::new(Some(inbound_rx)),
+            model: None,
+            inbound_rx: None,
         }
     }
 
@@ -274,9 +265,7 @@ impl AgentLoop {
 
     /// Gets an existing session or creates a new one
     async fn get_or_create_session(&self, channel: &str, chat_id: &str) -> Result<Session> {
-        let session_manager = self.session_manager.read().await;
-
-        session_manager
+        self.session_manager
             .get_or_create_session(channel, chat_id)
             .await
             .map_err(|e| AgentError::SessionError(e.to_string()))
@@ -523,13 +512,11 @@ impl AgentLoop {
 
     /// Saves the session to persistent storage
     async fn save_session(&self, session: &Session) -> Result<()> {
-        let session_manager = self.session_manager.read().await;
-
         // Update the session in the manager with our modified version
         // Note: This clones the entire session (potentially 50 messages). For high-throughput
         // scenarios, consider using Arc<Session> or implementing a dirty-flag mechanism
         // to avoid repeated cloning. Current implementation prioritizes simplicity.
-        session_manager
+        self.session_manager
             .update_session(session.clone())
             .await
             .map_err(|e| AgentError::SessionError(e.to_string()))?;
@@ -537,7 +524,7 @@ impl AgentLoop {
         // Also trigger immediate persistence for this session
         // Note: Persistence failures are logged but don't fail the request to avoid data loss
         // in the in-memory session state. The auto-persistence task will retry on next cycle.
-        if let Err(e) = session_manager.persist_session(session).await {
+        if let Err(e) = self.session_manager.persist_session(session).await {
             tracing::error!(
                 session_id = %session.session_id,
                 error = %e,
@@ -566,9 +553,11 @@ impl AgentLoop {
                 rx
             }
             None => {
-                tracing::error!("AgentLoop started without inbound receiver - cannot process messages");
+                tracing::error!(
+                    "AgentLoop started without inbound receiver - cannot process messages"
+                );
                 return Err(AgentError::ChatHubError(
-                    "No inbound receiver configured".to_string()
+                    "No inbound receiver configured".to_string(),
                 ));
             }
         };
@@ -689,17 +678,18 @@ mod tests {
         let llm_provider: Arc<dyn LlmProvider> = Arc::new(MockLlmProvider);
         let context_builder: Arc<dyn ContextBuilder> = Arc::new(MockContextBuilder);
         let tool_registry = Arc::new(ToolRegistry::new());
-        let session_manager = Arc::new(RwLock::new(SessionManager::new(std::path::PathBuf::from(
+        let session_manager = Arc::new(SessionManager::new(std::path::PathBuf::from(
             "/tmp/sessions",
-        ))));
+        )));
 
-        let agent = AgentLoop::new(
+        let agent = AgentLoop::builder(
             chat_hub,
             llm_provider,
             context_builder,
             tool_registry,
             session_manager,
-        );
+        )
+        .build();
 
         assert_eq!(agent.max_iterations(), MAX_ITERATIONS);
         assert_eq!(agent.model(), "test-model");
@@ -711,18 +701,19 @@ mod tests {
         let llm_provider: Arc<dyn LlmProvider> = Arc::new(MockLlmProvider);
         let context_builder: Arc<dyn ContextBuilder> = Arc::new(MockContextBuilder);
         let tool_registry = Arc::new(ToolRegistry::new());
-        let session_manager = Arc::new(RwLock::new(SessionManager::new(std::path::PathBuf::from(
+        let session_manager = Arc::new(SessionManager::new(std::path::PathBuf::from(
             "/tmp/sessions",
-        ))));
+        )));
 
-        let agent = AgentLoop::with_model(
+        let agent = AgentLoop::builder(
             chat_hub,
             llm_provider,
             context_builder,
             tool_registry,
             session_manager,
-            "custom-model",
-        );
+        )
+        .with_model("custom-model")
+        .build();
 
         assert_eq!(agent.model(), "custom-model");
     }

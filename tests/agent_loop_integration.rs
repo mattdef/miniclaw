@@ -19,7 +19,8 @@ impl miniclaw::providers::LlmProvider for MockLlmProvider {
         _messages: Vec<miniclaw::providers::LlmMessage>,
         _tools: Vec<serde_json::Value>,
         _model: &str,
-    ) -> std::result::Result<miniclaw::providers::LlmResponse, miniclaw::providers::ProviderError> {
+    ) -> std::result::Result<miniclaw::providers::LlmResponse, miniclaw::providers::ProviderError>
+    {
         Ok(miniclaw::providers::LlmResponse {
             content: "Mock response".to_string(),
             tool_calls: None,
@@ -38,8 +39,12 @@ impl miniclaw::providers::LlmProvider for MockLlmProvider {
 
     async fn list_models(
         &self,
-    ) -> std::result::Result<Vec<miniclaw::providers::ModelInfo>, miniclaw::providers::ProviderError> {
-        Ok(vec![miniclaw::providers::ModelInfo::new("test-model", false)])
+    ) -> std::result::Result<Vec<miniclaw::providers::ModelInfo>, miniclaw::providers::ProviderError>
+    {
+        Ok(vec![miniclaw::providers::ModelInfo::new(
+            "test-model",
+            false,
+        )])
     }
 }
 

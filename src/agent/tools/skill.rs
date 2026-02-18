@@ -7,7 +7,7 @@
 //! - delete_skill: Delete a user-created skill
 
 use crate::agent::tools::types::{Tool, ToolError, ToolExecutionContext, ToolResult};
-use crate::skills::{BUILT_IN_TOOLS, SkillManagerError, SkillParameter, SkillsManager};
+use crate::skills::{SkillManagerError, SkillParameter, SkillsManager};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -440,9 +440,7 @@ impl Tool for DeleteSkillTool {
             })?;
 
         // Delete the skill
-        let built_in_list: Vec<String> = BUILT_IN_TOOLS.iter().map(|s| s.to_string()).collect();
-
-        match skills_manager.delete_skill(name, &built_in_list).await {
+        match skills_manager.delete_skill(name).await {
             Ok(()) => {
                 let response = json!({
                     "success": true,
