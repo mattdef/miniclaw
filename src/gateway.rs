@@ -154,6 +154,44 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
     );
     info!("Context builder initialized");
 
+    // Create a new SessionManager wrapped in RwLock for AgentLoop
+    // Note: This is separate from the persistence SessionManager above
+    // In a future refactor, we should unify these
+    let agent_session_manager = Arc::new(RwLock::new(SessionManager::new(sessions_dir.clone())));
+    agent_session_manager
+        .write()
+        .await
+        .initialize()
+        .await
+        .context("Failed to initialize agent SessionManager")?;
+
+    // Initialize AgentLoop for message processing with inbound receiver
+    let agent_loop = AgentLoop::with_model_and_receiver(
+        Arc::clone(&chat_hub),
+        llm_provider,
+        context_builder,
+        tool_registry,
+        agent_session_manager,
+        model.clone(),
+        agent_rx,
+    );
+    info!("AgentLoop initialized with inbound receiver");
+
+    // Spawn AgentLoop processing task
+    // Note: AgentLoop.run() can only be called once as it takes ownership of the inbound receiver
+    tokio::spawn(async move {
+        info!("AgentLoop processing task started");
+        match agent_loop.run().await {
+            Ok(()) => {
+                info!("AgentLoop processing task stopped normally");
+            }
+            Err(e) => {
+                error!("AgentLoop error: {}. Task terminated.", e);
+            }
+        }
+        info!("AgentLoop processing task terminated");
+    });
+
     // Initialize Telegram channel if configured
     let telegram_channel = if let Some(token) = &config.telegram_token {
         match TelegramChannel::new(token.clone(), config.allow_from.clone()) {
