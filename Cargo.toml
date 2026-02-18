@@ -29,6 +29,12 @@ predicates = "3"
 tempfile = "3"
 criterion = { version = "0.5", features = ["async_tokio"] }
 
+[profile.release]
+opt-level = "z"     # optimiser pour la taille
+lto = true          # Link Time Optimization
+codegen-units = 1   # meilleure optimisation
+panic = "abort"     # éliminer le code de unwind
+
 [[bench]]
 name = "agent_loop_bench"
 harness = false
