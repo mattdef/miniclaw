@@ -234,10 +234,9 @@ mod tests {
     #[test]
     fn test_minimal_context_builder() {
         let builder = MinimalContextBuilder::new();
-        // Test that it can be instantiated
-        let _size = std::mem::size_of_val(&builder);
-        // If we get here, the builder was created successfully
-        assert!(true);
+        // Test that it can be instantiated - if we get here, it was created successfully
+        // The existence of the builder is the test
+        let _ = builder;
     }
 
     #[tokio::test]

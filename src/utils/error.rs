@@ -3,7 +3,7 @@
 //! This module provides structured error types using `thiserror` for library code.
 //! CLI/main modules should use `anyhow` for easy context.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 /// Global error type for miniclaw operations
@@ -60,7 +60,7 @@ pub enum MiniClawError {
 impl MiniClawError {
     /// Sanitize a path for display (remove sensitive user information)
     #[allow(dead_code)]
-    fn sanitize_path(path: &PathBuf) -> String {
+    fn sanitize_path(path: &Path) -> String {
         // Replace home directory with ~
         if let Some(home) = dirs::home_dir() {
             if let Ok(stripped) = path.strip_prefix(&home) {
@@ -420,12 +420,10 @@ mod tests {
 
         let telegram_err = MiniClawError::external_service("telegram", "timeout");
         assert!(telegram_err.suggestion().is_some());
-        assert!(
-            telegram_err
-                .suggestion()
-                .unwrap()
-                .contains("TELEGRAM_BOT_TOKEN")
-        );
+        assert!(telegram_err
+            .suggestion()
+            .unwrap()
+            .contains("TELEGRAM_BOT_TOKEN"));
 
         let llm_err = MiniClawError::external_service("llm", "unauthorized");
         assert!(llm_err.suggestion().is_some());

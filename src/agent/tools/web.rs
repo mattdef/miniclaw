@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn test_max_response_size_truncation() {
-        let tool = WebTool::new();
+        let _tool = WebTool::new();
 
         // Create content larger than MAX_RESPONSE_SIZE (100KB)
         let large_content = "x".repeat(150 * 1024); // 150KB
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_http_error_body_truncation() {
-        let tool = WebTool::new();
+        let _tool = WebTool::new();
 
         // Create error body larger than MAX_ERROR_BODY_SIZE (500 bytes)
         let large_error = "e".repeat(1000);

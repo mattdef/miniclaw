@@ -630,8 +630,10 @@ mod tests {
     #[tokio::test]
     async fn test_truncate_context() {
         let temp_dir = TempDir::new().unwrap();
-        let mut config = ContextBuilderConfig::default();
-        config.max_context_tokens = 10; // Very small for testing
+        let config = ContextBuilderConfig {
+            max_context_tokens: 10, // Very small for testing
+            ..Default::default()
+        };
 
         let builder = ContextBuilderImpl::with_config(temp_dir.path(), config).unwrap();
 
@@ -784,8 +786,10 @@ mod tests {
     #[tokio::test]
     async fn test_history_limits_to_max_messages() {
         let mut session = create_test_session();
-        let mut config = ContextBuilderConfig::default();
-        config.max_history_messages = 3;
+        let config = ContextBuilderConfig {
+            max_history_messages: 3,
+            ..Default::default()
+        };
 
         // Add 5 messages
         for i in 1..=5 {
@@ -836,8 +840,10 @@ mod tests {
             .await
             .unwrap();
 
-        let mut config = ContextBuilderConfig::default();
-        config.max_memory_entries = 5; // Limit to 5
+        let config = ContextBuilderConfig {
+            max_memory_entries: 5, // Limit to 5
+            ..Default::default()
+        };
 
         let builder = ContextBuilderImpl::with_config(temp_dir.path(), config).unwrap();
         let msg = builder.build_memory_message().await.unwrap();

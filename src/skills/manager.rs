@@ -911,7 +911,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_load_skills_from_disk() {
-        let (temp_dir, manager) = setup_test_manager().await;
+        let (_temp_dir, manager) = setup_test_manager().await;
 
         // Create skill manually on disk
         let skill_dir = manager.skills_dir().join("manual_skill");

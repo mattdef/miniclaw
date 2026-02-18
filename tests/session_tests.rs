@@ -1,5 +1,4 @@
 use miniclaw::session::{Message, SessionManager};
-use std::path::PathBuf;
 use tempfile::TempDir;
 
 #[tokio::test]

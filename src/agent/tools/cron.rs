@@ -194,11 +194,11 @@ impl Tool for CronTool {
                 "job_type": {
                     "type": "string",
                     "enum": ["fire_at", "interval"],
-                    "description": "Type of job to schedule (required for 'schedule' action)"
+                    "description": "Type of job to schedule (required when action='schedule')"
                 },
                 "command": {
                     "type": "string",
-                    "description": "Command to execute (required for 'schedule' action)"
+                    "description": "Command to execute (required when action='schedule')"
                 },
                 "args": {
                     "type": "array",
@@ -207,55 +207,19 @@ impl Tool for CronTool {
                 },
                 "time": {
                     "type": "string",
-                    "description": "ISO 8601 datetime for FireAt jobs (e.g., '2026-02-16T10:00:00Z')"
+                    "description": "ISO 8601 datetime for FireAt jobs (required when action='schedule' and job_type='fire_at', e.g., '2026-02-16T10:00:00Z')"
                 },
                 "minutes": {
                     "type": "integer",
                     "minimum": 2,
-                    "description": "Interval in minutes for recurring jobs (minimum 2)"
+                    "description": "Interval in minutes for recurring jobs (required when action='schedule' and job_type='interval', minimum 2)"
                 },
                 "job_id": {
                     "type": "string",
-                    "description": "Job ID to cancel (required for 'cancel' action)"
+                    "description": "Job ID to cancel (required when action='cancel')"
                 }
             },
-            "required": ["action"],
-            "allOf": [
-                {
-                    "if": {
-                        "properties": { "action": { "const": "schedule" } }
-                    },
-                    "then": {
-                        "required": ["job_type", "command"],
-                        "allOf": [
-                            {
-                                "if": {
-                                    "properties": { "job_type": { "const": "fire_at" } }
-                                },
-                                "then": {
-                                    "required": ["time"]
-                                }
-                            },
-                            {
-                                "if": {
-                                    "properties": { "job_type": { "const": "interval" } }
-                                },
-                                "then": {
-                                    "required": ["minutes"]
-                                }
-                            }
-                        ]
-                    }
-                },
-                {
-                    "if": {
-                        "properties": { "action": { "const": "cancel" } }
-                    },
-                    "then": {
-                        "required": ["job_id"]
-                    }
-                }
-            ]
+            "required": ["action"]
         })
     }
 

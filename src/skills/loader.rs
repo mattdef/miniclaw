@@ -488,7 +488,6 @@ pub fn skill_exists(skills_dir: &Path, skill_name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
     use tempfile::TempDir;
 
     fn create_test_skill_md(name: &str, desc: &str) -> String {

@@ -188,14 +188,12 @@ fn merge_env_variables(config: Config) -> Config {
         Some(crate::providers::ProviderConfig::openai(key))
     } else if let Some(key) = std::env::var("KIMI_API_KEY").ok().filter(|k| !k.is_empty()) {
         Some(crate::providers::ProviderConfig::kimi(key))
-    } else if let Some(key) = std::env::var("OPENROUTER_API_KEY")
-        .ok()
-        .or(std::env::var("MINICLAW_API_KEY").ok())
-        .filter(|k| !k.is_empty())
-    {
-        Some(crate::providers::ProviderConfig::openrouter(key))
     } else {
-        None
+        std::env::var("OPENROUTER_API_KEY")
+            .ok()
+            .or(std::env::var("MINICLAW_API_KEY").ok())
+            .filter(|k| !k.is_empty())
+            .map(crate::providers::ProviderConfig::openrouter)
     };
 
     Config {

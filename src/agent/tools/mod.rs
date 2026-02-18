@@ -711,9 +711,8 @@ mod tests {
     async fn test_with_all_default_tools() {
         use crate::chat::ChatHub;
         use crate::config::Config;
-        use std::path::PathBuf;
 
-        let workspace_path = PathBuf::from(std::env::temp_dir());
+        let workspace_path = std::env::temp_dir();
         let chat_hub = Arc::new(ChatHub::new());
         let config = Config::default();
 

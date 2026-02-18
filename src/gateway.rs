@@ -15,11 +15,6 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, warn};
 
-/// Memory threshold in MB for warning logs (NFR-P2)
-const MEMORY_WARNING_THRESHOLD_MB: u64 = 30;
-/// Memory check interval in seconds
-const MEMORY_CHECK_INTERVAL_SECS: u64 = 60;
-
 /// Runs the gateway daemon with auto-persistence and graceful shutdown.
 ///
 /// This function:
@@ -31,7 +26,6 @@ const MEMORY_CHECK_INTERVAL_SECS: u64 = 60;
 /// 6. Handles SIGTERM/SIGINT for graceful shutdown
 /// 7. Flushes all sessions to disk before exiting
 pub async fn run_gateway(config: &Config) -> Result<()> {
-    use sysinfo::{System, get_current_pid};
 
     info!(
         version = env!("CARGO_PKG_VERSION"),

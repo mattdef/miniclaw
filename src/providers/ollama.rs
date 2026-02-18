@@ -617,7 +617,7 @@ mod tests {
     #[test]
     fn test_handle_connection_error_connect() {
         let config = create_test_config();
-        let provider = OllamaProvider::new(config);
+        let _provider = OllamaProvider::new(config);
 
         // Create a mock connection error using Network variant directly
         let err = ProviderError::network("Connection failed");
@@ -832,7 +832,7 @@ mod tests {
     #[test]
     fn test_empty_stream_response() {
         let config = create_test_config();
-        let provider = OllamaProvider::new(config);
+        let _provider = OllamaProvider::new(config);
 
         // Test that an empty accumulated response is handled
         let accumulated = AccumulatedResponse::default();
