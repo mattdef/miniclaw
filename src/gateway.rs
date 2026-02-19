@@ -234,7 +234,7 @@ pub async fn run_gateway(config: &Config) -> Result<()> {
                 _ = interval.tick() => {
                     system.refresh_all();
                     if let Some(process) = system.process(current_pid) {
-                        let memory_mb = process.memory() / 1024;
+                        let memory_mb = process.memory() / 1024 / 1024;
                         if memory_mb > MEMORY_WARNING_THRESHOLD_MB {
                             warn!(memory_mb = memory_mb, threshold_mb = MEMORY_WARNING_THRESHOLD_MB, "Memory usage exceeds threshold");
                         } else {
@@ -376,7 +376,6 @@ fn create_provider(config: &Config) -> Result<Arc<dyn LlmProvider>> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     #[tokio::test]
     async fn test_gateway_command_available() {
